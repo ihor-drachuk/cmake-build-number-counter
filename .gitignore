@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Server data (ignored by default, uncomment to track for backup)
+server-data/
+# !server-data/build_numbers.json
+
+# Temporary sync state files (should never be committed)
+*.sync
+*.tmp
+
+# CMake build directories
+examples/*/build/
+examples/*/out/
+build/
+out/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Generated files from examples
+examples/*/version.h
+examples/*/my_build_counter.txt
+examples/*/build_number.txt
+examples/*/*.txt.sync
+

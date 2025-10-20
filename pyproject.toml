@@ -1,0 +1,3 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["cmake: tests requiring CMake and a C++ compiler"]
