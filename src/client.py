@@ -124,7 +124,7 @@ def increment_on_server(server_url, project_key, local_version=None, server_toke
         log_message(f"Server error: {error_msg}")
         return None
     except urllib.error.URLError as e:
-        log_message(f"Connection error: {e.reason}")
+        log_message(f"Server unavailable: {e.reason}")
         return None
     except Exception as e:
         log_message(f"Request failed: {e}")
@@ -173,7 +173,7 @@ def set_on_server(server_url, project_key, version, server_token=None):
         log_message(f"Server error: {error_msg}")
         return None
     except urllib.error.URLError as e:
-        log_message(f"Connection error: {e.reason}")
+        log_message(f"Server unavailable: {e.reason}")
         return None
     except Exception as e:
         log_message(f"Request failed: {e}")
