@@ -29,11 +29,11 @@ include(CMakeBuildNumber)
 
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/version.h"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
 )
 
 add_executable(myapp main.cpp)
-target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR})
+target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
 ```
 
 #### Option B: Manual copy
@@ -47,11 +47,11 @@ include(${CMAKE_SOURCE_DIR}/cmake/CMakeBuildNumber.cmake)
 
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/version.h"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
 )
 
 add_executable(myapp main.cpp)
-target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR})
+target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
 ```
 
 ### 2. Use the Generated Header
@@ -134,13 +134,13 @@ Each project gets its own independent counter:
 project(Frontend VERSION 3.2.1.0)
 increment_build_number(
     PROJECT_KEY "frontend"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/version_frontend.h"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version_frontend.h"
 )
 
 project(Backend VERSION 7.0.5.0)
 increment_build_number(
     PROJECT_KEY "backend"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/version_backend.h"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version_backend.h"
 )
 ```
 
@@ -246,7 +246,7 @@ Custom:
 ```cmake
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/version.h"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
     LOCAL_FILE "${CMAKE_SOURCE_DIR}/build_counter.txt"
 )
 ```
@@ -320,7 +320,7 @@ export BUILD_SERVER_TOKEN=<token>
 # Via CMake parameter
 increment_build_number(
     PROJECT_KEY "my-app"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/version.h"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
     SERVER_URL "http://server:8080"
     SERVER_TOKEN "${BUILD_SERVER_TOKEN}"
 )

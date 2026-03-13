@@ -12,13 +12,13 @@ include(CMakeBuildNumber)
 # This is useful if you want to commit the counter to version control
 increment_build_number(
     PROJECT_KEY "example-custom-location"
-    VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/version.h"
+    VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
     LOCAL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/my_build_counter.txt"
 )
 
 # Create executable
 add_executable(custom_example main.cpp)
-target_include_directories(custom_example PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(custom_example PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 message(STATUS "========================================")
 message(STATUS "Example 3: Custom Counter Location")

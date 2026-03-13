@@ -29,7 +29,7 @@ Generates version header with auto-incremented build number at build time.
 
 Arguments:
   PROJECT_KEY - Unique identifier for the project (required)
-  VERSION_HEADER - Output header file path, e.g., "${CMAKE_BINARY_DIR}/version.h" (required)
+  VERSION_HEADER - Output header file path, e.g., "${CMAKE_BINARY_DIR}/generated/version.h" (required)
   SERVER_URL - URL of the build number server (optional, uses BUILD_SERVER_URL env var if not set)
   SERVER_TOKEN - API token for server authentication (optional, uses BUILD_SERVER_TOKEN env var if not set)
   LOCAL_FILE - Path to local counter file for offline fallback (optional, defaults to build dir)
@@ -47,12 +47,12 @@ Example:
 
   increment_build_number(
     PROJECT_KEY "myproject"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/version.h"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
     SERVER_URL "http://your-server.com:8080"
   )
 
   add_executable(myapp main.cpp)
-  target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR})
+  target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
 #]=======================================================================]
 function(increment_build_number)

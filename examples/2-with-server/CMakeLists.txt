@@ -11,13 +11,13 @@ include(CMakeBuildNumber)
 # The server URL can also be set via BUILD_SERVER_URL environment variable
 increment_build_number(
     PROJECT_KEY "example-with-server"
-    VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/version.h"
+    VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
     SERVER_URL "http://localhost:8080"
 )
 
 # Create executable
 add_executable(server_example main.cpp)
-target_include_directories(server_example PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(server_example PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 message(STATUS "========================================")
 message(STATUS "Example 2: Using Central Build Server")

@@ -36,7 +36,7 @@ def test_example_simple_builds(tmp_path):
     assert result.returncode == 0, f"CMake build failed:\n{result.stderr}"
 
     # Verify version.h exists and has correct content
-    version_h = build_dir / "version.h"
+    version_h = build_dir / "generated" / "version.h"
     assert version_h.exists(), "version.h was not generated"
 
     content = version_h.read_text()
@@ -72,7 +72,7 @@ def test_build_number_increments(tmp_path):
         timeout=60,
         check=True,
     )
-    content1 = (build_dir / "version.h").read_text()
+    content1 = (build_dir / "generated" / "version.h").read_text()
 
     # Second build
     subprocess.run(
@@ -83,7 +83,7 @@ def test_build_number_increments(tmp_path):
         timeout=60,
         check=True,
     )
-    content2 = (build_dir / "version.h").read_text()
+    content2 = (build_dir / "generated" / "version.h").read_text()
 
     # Extract build numbers
     def extract_build(text):
