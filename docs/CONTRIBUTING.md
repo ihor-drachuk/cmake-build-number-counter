@@ -35,6 +35,8 @@ Developer's machine              Build server
 3. Client tries server → falls back to local file → returns build number
 4. CMake script writes `version.h` with the number
 
+**Force-set flow:** `POST /set` or `--force-version` / `--set-counter` bypasses increment and sets the counter to an exact value. Used for resets, migrations, and disaster recovery.
+
 **Offline sync:** client saves a `.sync` file when working locally. On next successful server contact, it sends its local counter; server takes the max.
 
 ## Project Structure
@@ -133,3 +135,4 @@ cmake --build build       # increments again
 - **No external dependencies.** Both client and server use only Python stdlib. pytest is the only dev dependency.
 - **Atomic file writes.** Both client and server use temp file + `os.replace()` to avoid partial writes.
 - **Server is optional.** Everything works locally without a server; the server adds cross-machine synchronization.
+- **Force-set uses the same auth as increment.** Any token with access to a project can both `/increment` and `/set` it. The server CLI `--set-counter` bypasses `accept_unknown` because it is a local admin operation.

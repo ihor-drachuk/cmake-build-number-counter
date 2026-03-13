@@ -13,6 +13,7 @@ import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
+from validation import validate_project_key
 
 # Default local file for storing fallback counter
 DEFAULT_LOCAL_FILE = "build_number.txt"
@@ -77,7 +78,7 @@ def clear_local_sync_state(local_file):
         os.remove(sync_file)
 
 
-def increment_on_server(server_url, project_key, local_version=None):
+def increment_on_server(server_url, project_key, local_version=None, server_token=None):
     """
     Request build number increment from server.
 
@@ -85,6 +86,7 @@ def increment_on_server(server_url, project_key, local_version=None):
         server_url: Base URL of the server
         project_key: Project identifier
         local_version: Optional local version to sync
+        server_token: Optional API token for authentication
 
     Returns:
         Build number on success, None on failure
@@ -97,11 +99,64 @@ def increment_on_server(server_url, project_key, local_version=None):
 
     data = json.dumps(request_data).encode('utf-8')
 
+    headers = {'Content-Type': 'application/json'}
+    if server_token:
+        headers['Authorization'] = f'Bearer {server_token}'
+
     try:
         req = urllib.request.Request(
             url,
             data=data,
-            headers={'Content-Type': 'application/json'},
+            headers=headers,
+            method='POST'
+        )
+
+        with urllib.request.urlopen(req, timeout=5) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            return result.get('build_number')
+
+    except urllib.error.HTTPError as e:
+        try:
+            error_data = json.loads(e.read().decode('utf-8'))
+            error_msg = error_data.get('error', str(e))
+        except Exception:
+            error_msg = str(e)
+        log_message(f"Server error: {error_msg}")
+        return None
+    except urllib.error.URLError as e:
+        log_message(f"Connection error: {e.reason}")
+        return None
+    except Exception as e:
+        log_message(f"Request failed: {e}")
+        return None
+
+
+def set_on_server(server_url, project_key, version, server_token=None):
+    """
+    Force-set build number on server via POST /set.
+
+    Args:
+        server_url: Base URL of the server
+        project_key: Project identifier
+        version: Exact value to set
+        server_token: Optional API token for authentication
+
+    Returns:
+        The set build number on success, None on failure
+    """
+    url = f"{server_url.rstrip('/')}/set"
+    request_data = {'project_key': project_key, 'version': version}
+    data = json.dumps(request_data).encode('utf-8')
+
+    headers = {'Content-Type': 'application/json'}
+    if server_token:
+        headers['Authorization'] = f'Bearer {server_token}'
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers=headers,
             method='POST'
         )
 
@@ -147,7 +202,7 @@ def increment_locally(local_file, project_key):
     return new_number
 
 
-def get_build_number(project_key, server_url=None, local_file=DEFAULT_LOCAL_FILE):
+def get_build_number(project_key, server_url=None, local_file=DEFAULT_LOCAL_FILE, server_token=None):
     """
     Get incremented build number, trying server first, then local fallback.
 
@@ -155,16 +210,19 @@ def get_build_number(project_key, server_url=None, local_file=DEFAULT_LOCAL_FILE
         project_key: Project identifier
         server_url: Server URL (optional)
         local_file: Path to local counter file
+        server_token: Optional API token for server authentication
 
     Returns:
         Tuple of (build_number, was_local)
     """
+    validate_project_key(project_key)
+
     # Check if we have a pending local version to sync
     pending_sync = load_local_sync_state(local_file)
 
     # Try server first if URL is provided
     if server_url:
-        build_number = increment_on_server(server_url, project_key, pending_sync)
+        build_number = increment_on_server(server_url, project_key, pending_sync, server_token)
 
         if build_number is not None:
             # Server succeeded
@@ -180,6 +238,40 @@ def get_build_number(project_key, server_url=None, local_file=DEFAULT_LOCAL_FILE
     # Server not available or no URL provided - use local fallback
     build_number = increment_locally(local_file, project_key)
     return build_number, True
+
+
+def force_set_build_number(project_key, version, server_url=None, local_file=DEFAULT_LOCAL_FILE, server_token=None):
+    """
+    Force-set build number to an exact value.
+
+    Tries server first, falls back to local-only with a warning.
+
+    Args:
+        project_key: Project identifier
+        version: Exact value to set
+        server_url: Server URL (optional)
+        local_file: Path to local counter file
+        server_token: Optional API token for server authentication
+
+    Returns:
+        Tuple of (version, was_local)
+    """
+    validate_project_key(project_key)
+
+    if server_url:
+        result = set_on_server(server_url, project_key, version, server_token)
+        if result is not None:
+            save_local_counter(local_file, result)
+            clear_local_sync_state(local_file)
+            log_message(f"Force-set build number on server: {result}")
+            return result, False
+
+    # Server unavailable or no URL -- set locally only
+    save_local_counter(local_file, version)
+    clear_local_sync_state(local_file)
+    log_message(f"WARNING: Force-set build number LOCALLY only for '{project_key}': {version}")
+    log_message(f"Server counter was NOT updated. Sync may override this value later.")
+    return version, True
 
 
 def format_output(build_number, output_format, project_key):
@@ -245,23 +337,58 @@ Examples:
         action='store_true',
         help='Suppress log messages (only output the build number)'
     )
+    parser.add_argument(
+        '--server-token',
+        help='API token for server authentication (overrides BUILD_SERVER_TOKEN env var)'
+    )
+    parser.add_argument(
+        '--force-version',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Force-set the build number to N (no increment)'
+    )
 
     args = parser.parse_args()
 
-    # Get server URL from argument or environment
+    # Validate project key
+    try:
+        validate_project_key(args.project_key)
+    except ValueError as e:
+        display_key = args.project_key
+        if len(display_key) > 40:
+            display_key = display_key[:40] + "..."
+        print(f"Error: Invalid project key '{display_key}': {e}", file=sys.stderr)
+        return 1
+
+    # Get server URL and token from argument or environment
     server_url = args.server_url or os.environ.get('BUILD_SERVER_URL')
+    server_token = args.server_token or os.environ.get('BUILD_SERVER_TOKEN')
 
     # Suppress logs if quiet mode
     if args.quiet:
         global log_message
         log_message = lambda *a, **k: None
 
-    # Get build number
-    build_number, was_local = get_build_number(
-        args.project_key,
-        server_url,
-        args.local_file
-    )
+    # Force-set or normal increment
+    if args.force_version is not None:
+        if args.force_version < 0:
+            print("Error: --force-version must be >= 0", file=sys.stderr)
+            return 1
+        build_number, was_local = force_set_build_number(
+            args.project_key,
+            args.force_version,
+            server_url,
+            args.local_file,
+            server_token,
+        )
+    else:
+        build_number, was_local = get_build_number(
+            args.project_key,
+            server_url,
+            args.local_file,
+            server_token,
+        )
 
     # Output result
     output = format_output(build_number, args.output_format, args.project_key)

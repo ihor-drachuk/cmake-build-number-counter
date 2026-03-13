@@ -24,6 +24,9 @@ examples/*/out/
 build/
 out/
 
+# Claude Code local settings
+.claude/*.local*
+
 # IDE and editor files
 .vscode/
 .idea/

@@ -20,8 +20,10 @@ Generates version header with auto-incremented build number at build time.
     PROJECT_KEY <key>
     VERSION_HEADER <path>
     [SERVER_URL <url>]
+    [SERVER_TOKEN <token>]
     [LOCAL_FILE <path>]
     [TARGET <target>]
+    [FORCE_VERSION <N>]
     [QUIET]
   )
 
@@ -29,8 +31,10 @@ Arguments:
   PROJECT_KEY - Unique identifier for the project (required)
   VERSION_HEADER - Output header file path, e.g., "${CMAKE_BINARY_DIR}/version.h" (required)
   SERVER_URL - URL of the build number server (optional, uses BUILD_SERVER_URL env var if not set)
+  SERVER_TOKEN - API token for server authentication (optional, uses BUILD_SERVER_TOKEN env var if not set)
   LOCAL_FILE - Path to local counter file for offline fallback (optional, defaults to build dir)
   TARGET - Target name to attach version generation (optional, auto-generated if not specified)
+  FORCE_VERSION - Force-set build number to this value instead of incrementing (optional)
   QUIET - Suppress client log messages
 
 Generates header with:
@@ -54,13 +58,27 @@ Example:
 function(increment_build_number)
     # Parse arguments
     set(options QUIET)
-    set(oneValueArgs PROJECT_KEY VERSION_HEADER SERVER_URL LOCAL_FILE TARGET)
+    set(oneValueArgs PROJECT_KEY VERSION_HEADER SERVER_URL SERVER_TOKEN LOCAL_FILE TARGET FORCE_VERSION)
     set(multiValueArgs)
     cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     # Validate required arguments
     if(NOT ARG_PROJECT_KEY)
         message(FATAL_ERROR "increment_build_number: PROJECT_KEY is required")
+    endif()
+
+    # Validate key format
+    string(LENGTH "${ARG_PROJECT_KEY}" _key_length)
+    if(_key_length GREATER 128)
+        message(FATAL_ERROR
+            "increment_build_number: Invalid PROJECT_KEY '${ARG_PROJECT_KEY}':"
+            " must be 1-128 characters, allowed: [a-zA-Z0-9._-]")
+    endif()
+    string(REGEX MATCH "^[a-zA-Z0-9._-]+$" _key_match "${ARG_PROJECT_KEY}")
+    if(NOT _key_match)
+        message(FATAL_ERROR
+            "increment_build_number: Invalid PROJECT_KEY '${ARG_PROJECT_KEY}':"
+            " must be 1-128 characters, allowed: [a-zA-Z0-9._-]")
     endif()
 
     if(NOT ARG_VERSION_HEADER)
@@ -109,8 +127,20 @@ set(CLIENT_ARGS
         file(APPEND "${GENERATOR_SCRIPT}" "    --server-url \"${ARG_SERVER_URL}\"\n")
     endif()
 
+    if(ARG_SERVER_TOKEN)
+        file(APPEND "${GENERATOR_SCRIPT}" "    --server-token \"${ARG_SERVER_TOKEN}\"\n")
+    endif()
+
     if(ARG_QUIET)
         file(APPEND "${GENERATOR_SCRIPT}" "    --quiet\n")
+    endif()
+
+    if(ARG_FORCE_VERSION)
+        if(NOT ARG_FORCE_VERSION MATCHES "^[0-9]+$")
+            message(FATAL_ERROR
+                "increment_build_number: FORCE_VERSION must be a non-negative integer, got '${ARG_FORCE_VERSION}'")
+        endif()
+        file(APPEND "${GENERATOR_SCRIPT}" "    --force-version ${ARG_FORCE_VERSION}\n")
     endif()
 
     file(APPEND "${GENERATOR_SCRIPT}" ")

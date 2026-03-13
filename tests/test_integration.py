@@ -12,11 +12,13 @@ CLIENT_PY = os.path.join(SRC_DIR, 'client.py')
 SERVER_PY = os.path.join(SRC_DIR, 'server.py')
 
 
-def run_client(project_key, local_file, server_url=None, quiet=True):
+def run_client(project_key, local_file, server_url=None, quiet=True, server_token=None):
     """Run client.py as subprocess, return stdout stripped."""
     cmd = [sys.executable, CLIENT_PY, '--project-key', project_key, '--local-file', local_file]
     if server_url:
         cmd += ['--server-url', server_url]
+    if server_token:
+        cmd += ['--server-token', server_token]
     if quiet:
         cmd += ['--quiet']
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
@@ -38,14 +40,33 @@ def wait_for_server(url, timeout=5):
     raise RuntimeError(f"Server at {url} did not start within {timeout}s")
 
 
-def start_server(port, data_dir):
-    """Start server subprocess with --data-dir pointing to temp directory."""
+def start_server(port, data_dir, tokens=None, rate_limit=None, ban_duration=None):
+    """Start server subprocess with --data-dir pointing to temp directory.
+
+    Args:
+        tokens: Optional dict to write as tokens.json before starting.
+        rate_limit: Optional int for --rate-limit flag.
+        ban_duration: Optional int for --ban-duration flag.
+    """
+    if tokens is not None:
+        os.makedirs(data_dir, exist_ok=True)
+        with open(os.path.join(data_dir, "tokens.json"), 'w') as f:
+            json.dump(tokens, f)
+
+    cmd = [
+        sys.executable, SERVER_PY,
+        '--port', str(port),
+        '--host', '127.0.0.1',
+        '--data-dir', data_dir,
+        '--accept-unknown',
+    ]
+    if rate_limit is not None:
+        cmd += ['--rate-limit', str(rate_limit)]
+    if ban_duration is not None:
+        cmd += ['--ban-duration', str(ban_duration)]
+
     return subprocess.Popen(
-        [sys.executable, SERVER_PY,
-         '--port', str(port),
-         '--host', '127.0.0.1',
-         '--data-dir', data_dir,
-         '--accept-unknown'],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -116,3 +137,240 @@ class TestClientServerIntegration:
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+
+class TestAuthIntegration:
+    def test_roundtrip_with_token(self, tmp_path):
+        """Server with auth enabled, client sends valid token."""
+        data_dir = str(tmp_path / "server-data")
+        port = pick_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+
+        tokens_data = {
+            "tokens": {
+                "integration-token": {
+                    "name": "test",
+                    "projects": ["auth-test"],
+                    "admin": False,
+                    "created": "2026-01-01T00:00:00Z"
+                }
+            }
+        }
+
+        proc = start_server(port, data_dir, tokens=tokens_data)
+        try:
+            wait_for_server(server_url)
+            local_file = str(tmp_path / "counter.txt")
+
+            result = run_client("auth-test", local_file,
+                                server_url=server_url, server_token="integration-token")
+            assert result == "1"
+
+            result = run_client("auth-test", local_file,
+                                server_url=server_url, server_token="integration-token")
+            assert result == "2"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+    def test_rejected_without_token_falls_back(self, tmp_path):
+        """Server with auth enabled, client sends no token, falls back to local."""
+        data_dir = str(tmp_path / "server-data")
+        port = pick_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+
+        tokens_data = {
+            "tokens": {
+                "some-token": {
+                    "name": "test",
+                    "projects": ["proj"],
+                    "admin": False,
+                    "created": "2026-01-01T00:00:00Z"
+                }
+            }
+        }
+
+        proc = start_server(port, data_dir, tokens=tokens_data)
+        try:
+            wait_for_server(server_url)
+            local_file = str(tmp_path / "counter.txt")
+
+            # No token → 401 → falls back to local
+            result = run_client("proj", local_file, server_url=server_url)
+            assert result == "1"  # local fallback
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+
+class TestRateLimitIntegration:
+    def test_rate_limit_triggers_local_fallback(self, tmp_path):
+        """Client falls back to local when rate-limited by server."""
+        data_dir = str(tmp_path / "server-data")
+        port = pick_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+
+        proc = start_server(port, data_dir, rate_limit=2, ban_duration=2)
+        try:
+            wait_for_server(server_url)
+            local_file = str(tmp_path / "counter.txt")
+
+            # First 2 requests succeed on server (rate_limit=2)
+            r1 = run_client("rate-test", local_file, server_url=server_url)
+            r2 = run_client("rate-test", local_file, server_url=server_url)
+            assert r1 == "1"
+            assert r2 == "2"
+
+            # 3rd request exceeds limit → 429 → client falls back to local
+            # Client still returns an incrementing number (local fallback)
+            r3 = run_client("rate-test", local_file, server_url=server_url)
+            assert int(r3) >= 3
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+
+class TestClientForceVersion:
+    def test_force_version_local_only(self, tmp_path):
+        """--force-version sets the local counter without server."""
+        local_file = str(tmp_path / "counter.txt")
+        cmd = [sys.executable, CLIENT_PY,
+               '--project-key', 'test',
+               '--local-file', local_file,
+               '--force-version', '42',
+               '--quiet']
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0
+        assert result.stdout.strip() == "42"
+
+    def test_force_version_with_server(self, tmp_path):
+        """--force-version updates both server and local counter."""
+        data_dir = str(tmp_path / "server-data")
+        port = pick_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+
+        proc = start_server(port, data_dir)
+        try:
+            wait_for_server(server_url)
+            local_file = str(tmp_path / "counter.txt")
+
+            # Force-set to 50
+            cmd = [sys.executable, CLIENT_PY,
+                   '--project-key', 'test',
+                   '--local-file', local_file,
+                   '--server-url', server_url,
+                   '--force-version', '50',
+                   '--quiet']
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0
+            assert result.stdout.strip() == "50"
+
+            # Next increment should return 51
+            assert run_client("test", local_file, server_url=server_url) == "51"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+    def test_force_version_to_zero(self, tmp_path):
+        """--force-version 0 resets the counter."""
+        local_file = str(tmp_path / "counter.txt")
+        # First set to 10
+        cmd = [sys.executable, CLIENT_PY,
+               '--project-key', 'test',
+               '--local-file', local_file,
+               '--force-version', '10',
+               '--quiet']
+        subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+
+        # Reset to 0
+        cmd = [sys.executable, CLIENT_PY,
+               '--project-key', 'test',
+               '--local-file', local_file,
+               '--force-version', '0',
+               '--quiet']
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0
+        assert result.stdout.strip() == "0"
+
+
+class TestServerSetCounter:
+    def test_set_counter_creates_project(self, tmp_path):
+        """--set-counter creates a new project in build_numbers.json."""
+        data_dir = str(tmp_path / "server-data")
+        cmd = [sys.executable, SERVER_PY,
+               '--set-counter',
+               '--project-key', 'new-proj',
+               '--version', '42',
+               '--data-dir', data_dir]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0
+
+        with open(os.path.join(data_dir, "build_numbers.json")) as f:
+            data = json.load(f)
+        assert data["new-proj"] == 42
+
+    def test_set_counter_overwrites(self, tmp_path):
+        """--set-counter overwrites an existing counter value."""
+        data_dir = str(tmp_path / "server-data")
+        os.makedirs(data_dir)
+        with open(os.path.join(data_dir, "build_numbers.json"), 'w') as f:
+            json.dump({"proj": 100}, f)
+
+        cmd = [sys.executable, SERVER_PY,
+               '--set-counter',
+               '--project-key', 'proj',
+               '--version', '5',
+               '--data-dir', data_dir]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0
+
+        with open(os.path.join(data_dir, "build_numbers.json")) as f:
+            data = json.load(f)
+        assert data["proj"] == 5
+
+    def test_set_counter_to_zero(self, tmp_path):
+        """--set-counter to 0 is allowed."""
+        data_dir = str(tmp_path / "server-data")
+        cmd = [sys.executable, SERVER_PY,
+               '--set-counter',
+               '--project-key', 'proj',
+               '--version', '0',
+               '--data-dir', data_dir]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0
+
+        with open(os.path.join(data_dir, "build_numbers.json")) as f:
+            data = json.load(f)
+        assert data["proj"] == 0
+
+    def test_set_counter_missing_project_key(self, tmp_path):
+        """--set-counter without --project-key fails."""
+        data_dir = str(tmp_path / "server-data")
+        cmd = [sys.executable, SERVER_PY,
+               '--set-counter',
+               '--version', '10',
+               '--data-dir', data_dir]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode != 0
+
+    def test_set_counter_missing_version(self, tmp_path):
+        """--set-counter without --version fails."""
+        data_dir = str(tmp_path / "server-data")
+        cmd = [sys.executable, SERVER_PY,
+               '--set-counter',
+               '--project-key', 'proj',
+               '--data-dir', data_dir]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode != 0
+
+    def test_set_counter_no_server_started(self, tmp_path):
+        """--set-counter exits immediately without starting HTTP server."""
+        data_dir = str(tmp_path / "server-data")
+        cmd = [sys.executable, SERVER_PY,
+               '--set-counter',
+               '--project-key', 'proj',
+               '--version', '10',
+               '--data-dir', data_dir]
+        # Should complete quickly (no server loop)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0
