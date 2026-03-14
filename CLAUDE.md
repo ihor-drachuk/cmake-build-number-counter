@@ -1,4 +1,4 @@
-# Build Number Counter
+# Build Number Counter (CBNC)
 
 Automatic build number incrementing for CMake projects with optional central server sync.
 

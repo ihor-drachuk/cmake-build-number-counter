@@ -1,4 +1,4 @@
-# Build Number Counter
+# Build Number Counter (CBNC)
 
 [![CI](https://github.com/ihor-drachuk/build-number-counter/actions/workflows/test.yml/badge.svg)](https://github.com/ihor-drachuk/build-number-counter/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
