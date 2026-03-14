@@ -21,6 +21,7 @@ tests/                  # pytest tests
   test_integration.py   #   End-to-end via subprocess (real server + real client)
   test_cmake.py         #   CMake configure+build of examples/1-simple, marked @pytest.mark.cmake
 examples/               # 3 self-contained CMake example projects
+docs/                   # Detailed docs (API, server, security, troubleshooting, contributing)
 .github/workflows/      # CI: test.yml (Python matrix + CMake matrix)
 ```
 
@@ -72,6 +73,10 @@ python src/client.py --project-key test --force-version 42 --quiet
 ## Maintaining docs
 
 When changing architecture, adding modules, changing CLI flags, or altering build/test procedures — update the relevant documentation:
-- `README.md` — user-facing docs (API reference, quick start, configuration, troubleshooting)
+- `README.md` — landing page: features, quick start, links to docs/
+- `docs/API.md` — CMake function reference, client CLI, configuration priority
+- `docs/SERVER.md` — server setup, CLI flags, endpoints, deployment
+- `docs/SECURITY.md` — authentication, rate limiting, hardening
+- `docs/TROUBLESHOOTING.md` — common issues and solutions
 - `docs/CONTRIBUTING.md` — developer onboarding (architecture, structure, setup, how to run)
 - `CLAUDE.md` (this file) — keep in sync with the above; if the project structure, conventions, or build commands change, update this file too
