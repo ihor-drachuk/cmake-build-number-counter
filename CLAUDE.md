@@ -45,6 +45,7 @@ tests/                  # pytest tests
   test_cmake.py         #   CMake tests for BUILD and CONFIGURE modes, marked @pytest.mark.cmake
 examples/               # 4 self-contained CMake example projects (1-simple, 2-with-server, 3-custom-location, 4-configure-mode)
 docs/                   # Detailed docs (API, server, security, troubleshooting)
+  adr/                  #   Architecture Decision Records
 .github/workflows/      # CI: test.yml (Python matrix + CMake matrix)
 ```
 
@@ -106,4 +107,5 @@ When changing architecture, adding modules, changing CLI flags, or altering buil
 - `docs/TROUBLESHOOTING.md` — common issues and solutions
 - `docs/CONTRIBUTING.md` — developer onboarding (architecture, structure, setup, how to run)
 - `docs/TEST-COVERAGE.md` — feature-by-feature test status table
+- `docs/adr/` — Architecture Decision Records for non-obvious design choices
 - `CLAUDE.md` (this file) — keep in sync with the above; if the project structure, conventions, or build commands change, update this file too

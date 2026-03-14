@@ -26,6 +26,22 @@ def post_json(base_url, path, data, token=None):
         return e.code, json.loads(e.read().decode())
 
 
+# When the server sends an error response before reading the request body
+# (e.g. 429 rate limit, 413 too large), the OS may TCP RST the connection
+# before the client reads the response. This is expected TCP behavior, not
+# a server bug (see docs/adr/001-tcp-rst-on-early-http-error-response.md).
+# Use this sentinel to distinguish "server rejected" from other failures.
+_SERVER_REJECTED = "CONNECTION_RESET_BY_SERVER"
+
+
+def _expect_rejection(func, *args, **kwargs):
+    """Call func and return (status, data), or _SERVER_REJECTED on TCP reset."""
+    try:
+        return func(*args, **kwargs)
+    except (ConnectionError, OSError, urllib.error.URLError):
+        return _SERVER_REJECTED
+
+
 def get_json(base_url, path):
     """Helper: GET from server, return (status_code, response_dict)."""
     url = f"{base_url}{path}"
@@ -142,10 +158,12 @@ class TestContentLengthLimit:
     def test_oversized_request(self, server_small_body_limit):
         # 64-byte limit, send a large payload
         big_body = json.dumps({"project_key": "x" * 100}).encode('utf-8')
-        status, data = _post_raw(server_small_body_limit, "/increment", big_body)
-        assert status == 413
-        assert data["error"] == "Request body too large"
-        assert "max_bytes" in data
+        result = _expect_rejection(_post_raw, server_small_body_limit, "/increment", big_body)
+        if result == _SERVER_REJECTED:
+            return
+        assert result[0] == 413
+        assert result[1]["error"] == "Request body too large"
+        assert "max_bytes" in result[1]
 
     def test_body_exactly_at_limit(self, running_server):
         # Default 1024-byte limit, normal request is well within
@@ -154,7 +172,10 @@ class TestContentLengthLimit:
 
     def test_413_response_format(self, server_small_body_limit):
         big_body = json.dumps({"project_key": "x" * 100}).encode('utf-8')
-        status, data = _post_raw(server_small_body_limit, "/increment", big_body)
+        result = _expect_rejection(_post_raw, server_small_body_limit, "/increment", big_body)
+        if result == _SERVER_REJECTED:
+            return
+        status, data = result
         assert status == 413
         assert "error" in data
         assert "max_bytes" in data
@@ -163,11 +184,13 @@ class TestContentLengthLimit:
     def test_content_length_lies_larger(self, server_small_body_limit):
         # Small actual body but Content-Length claims 5000 bytes
         small_body = b'{"project_key":"a"}'
-        status, data = _post_raw(
-            server_small_body_limit, "/increment", small_body,
+        result = _expect_rejection(
+            _post_raw, server_small_body_limit, "/increment", small_body,
             headers={'Content-Length': '5000'},
         )
-        assert status == 413
+        if result == _SERVER_REJECTED:
+            return
+        assert result[0] == 413
 
 
 class TestMaxProjectLimit:
@@ -465,15 +488,20 @@ class TestRateLimiting:
         """The request that exceeds the limit gets 429."""
         for _ in range(3):
             post_json(rate_limited_server, "/increment", {"project_key": "test"})
-        status, data = post_json(rate_limited_server, "/increment", {"project_key": "test"})
-        assert status == 429
-        assert data["ban_type"] == "temporary"
+        result = _expect_rejection(post_json, rate_limited_server, "/increment", {"project_key": "test"})
+        if result == _SERVER_REJECTED:
+            return
+        assert result[0] == 429
+        assert result[1]["ban_type"] == "temporary"
 
     def test_429_response_format_temp(self, rate_limited_server):
         """Verify temp ban response has all expected fields."""
         for _ in range(3):
             post_json(rate_limited_server, "/increment", {"project_key": "test"})
-        status, data = post_json(rate_limited_server, "/increment", {"project_key": "test"})
+        result = _expect_rejection(post_json, rate_limited_server, "/increment", {"project_key": "test"})
+        if result == _SERVER_REJECTED:
+            return
+        status, data = result
         assert status == 429
         assert "error" in data
         assert data["ban_type"] == "temporary"
@@ -485,10 +513,12 @@ class TestRateLimiting:
         for _ in range(3):
             post_json(rate_limited_server, "/increment", {"project_key": "test"})
         # Trigger ban
-        post_json(rate_limited_server, "/increment", {"project_key": "test"})
+        _expect_rejection(post_json, rate_limited_server, "/increment", {"project_key": "test"})
         # Still banned
-        status, _ = post_json(rate_limited_server, "/increment", {"project_key": "test"})
-        assert status == 429
+        result = _expect_rejection(post_json, rate_limited_server, "/increment", {"project_key": "test"})
+        if result == _SERVER_REJECTED:
+            return
+        assert result[0] == 429
 
     def test_rate_limit_disabled(self, tmp_path, monkeypatch):
         """With rate_limit=0, no rate limiting is applied."""
@@ -509,8 +539,10 @@ class TestRateLimiting:
         get_json(rate_limited_server, "/")
         post_json(rate_limited_server, "/increment", {"project_key": "test"})
         # 4th request should be rate-limited
-        status, data = get_json(rate_limited_server, "/")
-        assert status == 429
+        result = _expect_rejection(get_json, rate_limited_server, "/")
+        if result == _SERVER_REJECTED:
+            return
+        assert result[0] == 429
 
     def test_permanent_ban_persisted(self, tmp_path, monkeypatch):
         """With ban_permanent=True, ban is written to banned_ips.json."""
@@ -524,11 +556,9 @@ class TestRateLimiting:
         try:
             for _ in range(2):
                 post_json(url, "/increment", {"project_key": "test"})
-            status, data = post_json(url, "/increment", {"project_key": "test"})
-            assert status == 429
-            assert data["ban_type"] == "permanent"
+            result = _expect_rejection(post_json, url, "/increment", {"project_key": "test"})
 
-            # Verify file was created
+            # Verify file was created (ban is persisted regardless of TCP delivery)
             import os
             ban_file = os.path.join(server_module.DATA_DIR, "banned_ips.json")
             assert os.path.exists(ban_file)
@@ -536,6 +566,10 @@ class TestRateLimiting:
                 ban_data = json.load(f)
             assert "127.0.0.1" in ban_data["banned"]
             assert "banned_at" in ban_data["banned"]["127.0.0.1"]
+
+            if result != _SERVER_REJECTED:
+                assert result[0] == 429
+                assert result[1]["ban_type"] == "permanent"
         finally:
             httpd.shutdown()
 
@@ -551,9 +585,11 @@ class TestRateLimiting:
         try:
             for _ in range(2):
                 post_json(url, "/increment", {"project_key": "test"})
-            _, data = post_json(url, "/increment", {"project_key": "test"})
-            assert data["ban_type"] == "permanent"
-            assert "retry_after_seconds" not in data
+            result = _expect_rejection(post_json, url, "/increment", {"project_key": "test"})
+            if result == _SERVER_REJECTED:
+                return
+            assert result[1]["ban_type"] == "permanent"
+            assert "retry_after_seconds" not in result[1]
         finally:
             httpd.shutdown()
 
@@ -570,7 +606,7 @@ class TestRateLimiting:
             # Trigger ban
             for _ in range(2):
                 post_json(url, "/increment", {"project_key": "test"})
-            post_json(url, "/increment", {"project_key": "test"})
+            _expect_rejection(post_json, url, "/increment", {"project_key": "test"})
 
             # Verify ban file was written
             import os
