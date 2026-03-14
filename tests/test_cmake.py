@@ -1031,6 +1031,91 @@ def test_server_auth_wrong_token_falls_back(tmp_path, cmake_auth_server):
 
 
 @pytest.mark.cmake
+def test_no_increment_ignores_server_changes(tmp_path, running_server):
+    """NO_INCREMENT reads local file even when server has a newer value.
+
+    Simulates the documented pattern: increment before project(), then
+    NO_INCREMENT after project() to generate VERSION_HEADER. Between the
+    two calls another client increments the same key on the server.
+    NO_INCREMENT must return the original local value, not the server's.
+    """
+    project_key = "test-no-incr-server"
+
+    # CMakeLists: increment + NO_INCREMENT in one configure (the documented pattern)
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+# Step 1: normal increment (talks to server)
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "{project_key}"
+    OUTPUT_VARIABLE BUILD_NUM
+    SERVER_URL "{running_server}"
+    QUIET
+)
+
+message(STATUS "STEP1=${{BUILD_NUM}}")
+project(TestNoIncrServer VERSION 1.0.0.${{BUILD_NUM}} LANGUAGES NONE)
+
+# Step 2: NO_INCREMENT — must reuse local value, no server call
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "{project_key}"
+    VERSION_HEADER "${{CMAKE_BINARY_DIR}}/generated/version.h"
+    NO_INCREMENT
+    QUIET
+)
+""")
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # First configure — establishes counter on server (e.g. 1)
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"First configure failed:\n{result.stderr}"
+    combined = result.stdout + result.stderr
+    match = re.search(r"STEP1=(\d+)", combined)
+    assert match, f"STEP1 not found in output:\n{combined}"
+    first_num = int(match.group(1))
+
+    version_h = build_dir / "generated" / "version.h"
+    assert version_h.exists(), "version.h was not generated"
+    header_num = extract_build_number_from_header(version_h.read_text())
+    assert header_num == first_num, (
+        f"NO_INCREMENT header ({header_num}) should match step 1 ({first_num})")
+
+    # Now simulate another client incrementing on the server
+    import client as client_module
+    server_num, _ = client_module.get_build_number(
+        project_key, server_url=running_server,
+        local_file=str(tmp_path / "other_client_counter.txt"))
+    assert server_num == first_num + 1, (
+        f"External increment should be {first_num + 1}, got {server_num}")
+
+    # Re-configure — step 1 gets first_num+2 from server, step 2 must also
+    # return first_num+2 (the new local value), NOT first_num+1 from server
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Second configure failed:\n{result.stderr}"
+    combined = result.stdout + result.stderr
+    match = re.search(r"STEP1=(\d+)", combined)
+    assert match, f"STEP1 not found in second configure:\n{combined}"
+    second_num = int(match.group(1))
+    assert second_num == first_num + 2, (
+        f"After external increment, server should return {first_num + 2}, got {second_num}")
+
+    header_num2 = extract_build_number_from_header(version_h.read_text())
+    assert header_num2 == second_num, (
+        f"NO_INCREMENT header ({header_num2}) must match step 1 ({second_num}), "
+        f"not the intermediate server value ({first_num + 1})")
+
+
+@pytest.mark.cmake
 def test_server_auth_wrong_project_falls_back(tmp_path, cmake_auth_server):
     """Valid token but wrong project causes rejection; client falls back to local."""
     url = cmake_auth_server['url']

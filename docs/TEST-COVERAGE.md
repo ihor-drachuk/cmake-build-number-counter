@@ -22,6 +22,7 @@ Checklist of features and their test status. Update when adding new features or 
 | MODE=CONFIGURE + FORCE_VERSION | YES | test_cmake | `test_configure_mode_force_version` |
 | NO_INCREMENT without counter file | YES | test_cmake | `test_no_increment_fails_without_prior_counter` |
 | NO_INCREMENT + FORCE_VERSION (mutual exclusion) | YES | test_cmake | `test_no_increment_with_force_version_fails` |
+| NO_INCREMENT ignores server changes | YES | test_cmake | `test_no_increment_ignores_server_changes` |
 | Invalid MODE value | YES | test_cmake | `test_invalid_mode_fails` |
 | FetchContent (BUILD mode) | YES | test_cmake | `test_fetchcontent_build_mode` |
 | FetchContent (CONFIGURE mode) | YES | test_cmake | `test_fetchcontent_configure_mode` |

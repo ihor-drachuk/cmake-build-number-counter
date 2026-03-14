@@ -158,6 +158,7 @@ See the [examples/](examples/) directory for complete, runnable projects:
 | [Security](docs/SECURITY.md) | Authentication, rate limiting, hardening |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and solutions |
 | [Contributing](docs/CONTRIBUTING.md) | Architecture, dev setup, running tests |
+| [Test Coverage](docs/TEST-COVERAGE.md) | Feature-by-feature test status |
 
 ## FAQ
 
