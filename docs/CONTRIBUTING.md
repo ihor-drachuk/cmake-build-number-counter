@@ -108,6 +108,8 @@ Tests take ~45 seconds total. Integration tests start real server subprocesses o
 
 **Examples and docs rule:** every example project in `examples/` and every CMake snippet in documentation must be manually verified after creation or editing — configure, build, and run to confirm it actually works. Code snippets in README/API docs must be consistent with real examples.
 
+**Coverage map:** see [TEST-COVERAGE.md](TEST-COVERAGE.md) for a feature-by-feature test status table. Update it when adding new features or tests.
+
 ## Running Locally
 
 ### Server

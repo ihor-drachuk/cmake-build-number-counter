@@ -138,3 +138,44 @@ def auth_server(tmp_path, monkeypatch):
         'admin_token': 'test-token-admin',
     }
     httpd.shutdown()
+
+
+@pytest.fixture
+def cmake_auth_server(tmp_path, monkeypatch):
+    """Start server with token auth for CMake integration tests."""
+    import server as server_module
+
+    url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+
+    tokens_data = {
+        "tokens": {
+            "cmake-project-token": {
+                "name": "cmake-project",
+                "projects": ["cmake-test-project"],
+                "admin": False,
+                "created": "2026-01-01T00:00:00Z"
+            },
+            "cmake-wildcard-token": {
+                "name": "cmake-wildcard",
+                "projects": ["cmake-test-*"],
+                "admin": False,
+                "created": "2026-01-01T00:00:00Z"
+            },
+            "cmake-admin-token": {
+                "name": "cmake-admin",
+                "projects": [],
+                "admin": True,
+                "created": "2026-01-01T00:00:00Z"
+            }
+        }
+    }
+    with open(server_module.TOKENS_FILE, 'w') as f:
+        json.dump(tokens_data, f)
+
+    yield {
+        'url': url,
+        'project_token': 'cmake-project-token',
+        'wildcard_token': 'cmake-wildcard-token',
+        'admin_token': 'cmake-admin-token',
+    }
+    httpd.shutdown()
