@@ -10,6 +10,7 @@ Every `cmake --build` increments the counter and generates a C++ version header 
 
 - Auto-increments build number on every build
 - Generates `version.h` with `MAJOR.MINOR.PATCH.BUILD` defines
+- **Two modes:** build-time (default) or configure-time (for `project(VERSION ...)`)
 - Works locally out of the box — no server needed
 - Optional central server for team synchronization
 - Offline fallback with automatic reconnection and sync
@@ -81,12 +82,44 @@ cmake --build build     # ...and here (43, 44, ...)
 
 That's it! No server, no setup — just build.
 
+### Alternative: Configure Mode
+
+Need the build number in `project(VERSION ...)`? Use configure mode — call **before** `project()`:
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+
+include(FetchContent)
+FetchContent_Declare(build_number_counter
+    GIT_REPOSITORY https://github.com/ihor-drachuk/build-number-counter.git
+    GIT_TAG main)
+FetchContent_MakeAvailable(build_number_counter)
+
+list(APPEND CMAKE_MODULE_PATH "${build_number_counter_SOURCE_DIR}/src")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "myapp"
+    OUTPUT_VARIABLE BUILD_NUM
+)
+
+project(MyApp VERSION 1.2.3.${BUILD_NUM} LANGUAGES CXX)
+# PROJECT_VERSION = "1.2.3.42", PROJECT_VERSION_TWEAK = 42
+```
+
+The build number auto-increments on every `cmake --build` (auto-reconfigure). See [API Reference](docs/API.md#configure-mode) for details.
+
 ## How It Works
 
-Build number increments at **build time** (not configure time) via a CMake custom target.
+Build number increments on every `cmake --build`:
 
-- **No server** — counter stored in a local text file, incremented on every build
-- **Server available** — counter incremented atomically on the server, local file kept in sync
+- **Build mode** (default) — custom target runs at build time, generates `version.h`
+- **Configure mode** — runs at configure time, returns value via `OUTPUT_VARIABLE` for use in `project(VERSION ...)`. Auto-triggers reconfigure on each build.
+
+Both modes support server sync:
+- **No server** — counter stored in a local text file
+- **Server available** — counter incremented atomically on the server
 - **Server goes down** — seamless fallback to local, auto-sync when it comes back
 
 ## Team Synchronization (optional)
@@ -114,6 +147,7 @@ See the [examples/](examples/) directory for complete, runnable projects:
 | [1-simple](examples/1-simple/) | Minimal setup, local counter only |
 | [2-with-server](examples/2-with-server/) | Synchronized counter via central server |
 | [3-custom-location](examples/3-custom-location/) | Counter file in source dir (for VCS tracking) |
+| [4-configure-mode](examples/4-configure-mode/) | Build number in `project(VERSION ...)` at configure time |
 
 ## Documentation
 
@@ -125,15 +159,11 @@ See the [examples/](examples/) directory for complete, runnable projects:
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and solutions |
 | [Contributing](docs/CONTRIBUTING.md) | Architecture, dev setup, running tests |
 
-## Troubleshooting
+## FAQ
 
-**Build number doesn't increment?**
-Check that Python is in PATH (`python --version`) and look at CMake build output for errors.
+**Build number doesn't increment?** Check that Python is in PATH and look at CMake output for errors. See [Troubleshooting](docs/TROUBLESHOOTING.md).
 
-**Server connection fails?**
-The client falls back to local counter automatically. Check `BUILD_SERVER_URL` and firewall rules.
-
-More: [Troubleshooting Guide](docs/TROUBLESHOOTING.md)
+**Server connection fails?** The client falls back to local counter automatically. Check `BUILD_SERVER_URL` and firewall rules.
 
 ## License
 

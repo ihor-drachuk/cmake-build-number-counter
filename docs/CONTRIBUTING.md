@@ -8,7 +8,7 @@ Automatic build number incrementing system for CMake projects. Three components:
 
 - **Server** (`src/server.py`) — HTTP server managing per-project counters with atomic increments and persistent JSON storage
 - **Client** (`src/client.py`) — fetches next build number from server, falls back to local file counter when offline, syncs back on reconnect
-- **CMake module** (`src/CMakeBuildNumber.cmake`) — integrates the client into CMake builds via a custom target that runs at build time and generates a C++ version header
+- **CMake module** (`src/CMakeBuildNumber.cmake`) — integrates the client into CMake builds. Two modes: BUILD (custom target at build time) and CONFIGURE (execute_process at configure time with auto-reconfigure)
 
 ## Architecture
 
@@ -56,7 +56,8 @@ build-number-counter/
 ├── examples/
 │   ├── 1-simple/                # Basic usage
 │   ├── 2-with-server/           # Server-synced
-│   └── 3-custom-location/       # Custom counter file path
+│   ├── 3-custom-location/       # Custom counter file path
+│   └── 4-configure-mode/        # Configure-time build number
 ├── .github/workflows/test.yml   # CI: Python tests + CMake tests
 ├── pyproject.toml               # pytest config
 ├── requirements-dev.txt         # Dev dependencies (pytest)
@@ -101,7 +102,11 @@ python -m pytest tests/ -v -m cmake
 python -m pytest tests/test_client.py -v
 ```
 
-Tests take ~15 seconds total. Integration tests start real server subprocesses on random ports; CMake tests configure and build example projects in temp directories.
+Tests take ~45 seconds total. Integration tests start real server subprocesses on random ports; CMake tests configure and build example projects in temp directories.
+
+**Testing rule:** increment tests must verify at least 2 consecutive increments via **separate cmake invocations** (2 separate `cmake --build` or 2 separate `cmake configure` runs). A single increment (0→1) is not sufficient — always confirm the second value equals the first plus one. Do not just call `increment_build_number()` twice in one CMakeLists.txt; that tests in-process behavior, not real usage.
+
+**Examples and docs rule:** every example project in `examples/` and every CMake snippet in documentation must be manually verified after creation or editing — configure, build, and run to confirm it actually works. Code snippets in README/API docs must be consistent with real examples.
 
 ## Running Locally
 
@@ -131,7 +136,7 @@ cmake --build build       # increments again
 
 ## Key Design Decisions
 
-- **Build time, not configure time.** The build number increments via `add_custom_target(... ALL)`, so it runs on every `cmake --build`, not on `cmake -B`.
+- **Two modes, same behavior.** BUILD mode uses `add_custom_target(... ALL)`, CONFIGURE mode uses `execute_process()` + auto-reconfigure via a stamp file (created at configure, deleted by custom target at build time, triggering reconfigure on next build). Both increment on every `cmake --build`.
 - **No external dependencies.** Both client and server use only Python stdlib. pytest is the only dev dependency.
 - **Atomic file writes.** Both client and server use temp file + `os.replace()` to avoid partial writes.
 - **Server is optional.** Everything works locally without a server; the server adds cross-machine synchronization.
