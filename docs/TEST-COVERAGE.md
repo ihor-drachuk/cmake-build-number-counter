@@ -49,7 +49,9 @@ Checklist of features and their test status. Update when adding new features or 
 | Server increment | YES | test_client | `TestIncrementOnServer` (mocked) |
 | Server unavailable → local fallback | YES | test_client, test_integration | |
 | Sync state (.sync file) | YES | test_client | `TestSyncState` |
-| Offline → online sync | YES | test_integration | `TestClientServerIntegration` |
+| Offline → online sync | YES | test_integration | `TestClientServerIntegration`, `TestOnlineOfflineOnline` |
+| Online → offline → online (continuous) | YES | test_integration | `TestOnlineOfflineOnline` |
+| Online → offline → online (server advanced) | YES | test_integration | `TestOnlineOfflineOnline` |
 | Force-version (local) | YES | test_client, test_integration | `TestForceSetBuildNumber`, `TestClientForceVersion` |
 | Force-version (server) | YES | test_integration | `TestClientForceVersion` |
 | Output formats (plain/cmake/json) | YES | test_client, test_integration | `TestFormatOutput` |
@@ -93,6 +95,6 @@ Checklist of features and their test status. Update when adding new features or 
 | CMake → client → server (CONFIGURE mode) | YES | test_cmake | `test_server_configure_mode_cmake_params` |
 | CMake → client → server with auth | YES | test_cmake | `test_server_auth_*` (5 tests) |
 | CMake → client → server rejection → local fallback | YES | test_cmake | `test_server_auth_wrong_*` (2 tests) |
-| Client → server → offline → online sync | YES | test_integration | `TestClientServerIntegration` |
+| Client → server → offline → online sync | YES | test_integration | `TestClientServerIntegration`, `TestOnlineOfflineOnline` |
 | CMake + server + rate limiting | NO | — | |
 | CMake + multiple features combined | NO | — | |

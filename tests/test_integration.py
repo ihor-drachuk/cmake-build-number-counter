@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 
 import pytest
 
@@ -134,6 +135,83 @@ class TestClientServerIntegration:
             # Next call should sync local=2 to server, then increment to 3
             result = run_client("sync-test", local_file, server_url=server_url)
             assert result == "3"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+
+class TestOnlineOfflineOnline:
+    def test_online_offline_online_continuous(self, tmp_path):
+        """Online x2, server dies, offline x2, server restarts, sync and continue."""
+        data_dir = str(tmp_path / "server-data")
+        local_file = str(tmp_path / "counter.txt")
+        port = pick_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+
+        # Phase 1: online
+        proc = start_server(port, data_dir)
+        try:
+            wait_for_server(server_url)
+            assert run_client("oo-test", local_file, server_url=server_url) == "1"
+            assert run_client("oo-test", local_file, server_url=server_url) == "2"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+        # Phase 2: offline fallback
+        assert run_client("oo-test", local_file, server_url=server_url) == "3"
+        assert run_client("oo-test", local_file, server_url=server_url) == "4"
+
+        # Phase 3: server back — sync and continue
+        proc = start_server(port, data_dir)
+        try:
+            wait_for_server(server_url)
+            assert run_client("oo-test", local_file, server_url=server_url) == "5"
+            # Confirm server persisted the synced value
+            assert run_client("oo-test", local_file, server_url=server_url) == "6"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+    def test_online_offline_online_server_advanced(self, tmp_path):
+        """Online x2, offline x2, someone else advances server, reconnect takes max."""
+        data_dir = str(tmp_path / "server-data")
+        local_file = str(tmp_path / "counter.txt")
+        port = pick_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+
+        # Phase 1: online
+        proc = start_server(port, data_dir)
+        try:
+            wait_for_server(server_url)
+            assert run_client("adv-test", local_file, server_url=server_url) == "1"
+            assert run_client("adv-test", local_file, server_url=server_url) == "2"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+        # Phase 2: offline fallback
+        assert run_client("adv-test", local_file, server_url=server_url) == "3"
+        assert run_client("adv-test", local_file, server_url=server_url) == "4"
+
+        # Phase 3: server back, but someone else incremented 10 times
+        proc = start_server(port, data_dir)
+        try:
+            wait_for_server(server_url)
+
+            # Advance server counter from 2 to 12 via /set
+            req = urllib.request.Request(
+                f"{server_url}/set",
+                data=json.dumps({"project_key": "adv-test", "version": 12}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+
+            # Client syncs: server has 12, local has 4 → max(12,4)+1 = 13
+            assert run_client("adv-test", local_file, server_url=server_url) == "13"
+            # Confirm server persisted the synced value
+            assert run_client("adv-test", local_file, server_url=server_url) == "14"
         finally:
             proc.terminate()
             proc.wait(timeout=5)
