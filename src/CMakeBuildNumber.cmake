@@ -242,18 +242,52 @@ function(increment_build_number)
             endif()
 
             # Auto-reconfigure: force reconfigure on every cmake --build.
-            # Mechanism: create a stamp file at configure time, depend on it,
-            # and add a custom target that deletes it at build time.
-            # Next build sees stamp missing/changed → triggers reconfigure → cycle repeats.
+            #
+            # Strategy differs by generator because of how each checks
+            # CMAKE_CONFIGURE_DEPENDS:
+            #
+            # Ninja: checks deps, runs targets, then re-checks (restat).
+            #   Deleting the stamp works: Ninja sees it missing → reconfigure.
+            #   But future-mtime causes infinite loops (Ninja re-checks).
+            #
+            # Unix Makefiles: checks deps ONCE before running targets.
+            #   Deletion is ignored (missing file = no mtime to compare).
+            #   Need stamp mtime > Makefile mtime at check time.
+            #   Custom target touch at build time provides this for
+            #   subsequent builds, but the first build needs a bootstrap:
+            #   set stamp mtime to the far future at first configure.
             set(_reconfigure_stamp "${CMAKE_BINARY_DIR}/_build_number_reconfigure_stamp_${ARG_PROJECT_KEY}")
-            file(WRITE "${_reconfigure_stamp}" "${BUILD_NUM_OUTPUT}")
             set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                 "${_reconfigure_stamp}")
-            if(NOT TARGET _build_number_invalidate_${ARG_PROJECT_KEY})
-                add_custom_target(_build_number_invalidate_${ARG_PROJECT_KEY} ALL
-                    COMMAND ${CMAKE_COMMAND} -E remove "${_reconfigure_stamp}"
-                    COMMENT "Invalidating build number configure stamp for ${ARG_PROJECT_KEY}"
-                )
+            if(CMAKE_GENERATOR MATCHES "Makefiles")
+                # Makefiles: write stamp; set future mtime on first configure
+                # to bootstrap the cycle (subsequent configures are triggered
+                # by touch, so stamp mtime is already newer than Makefile).
+                if(NOT EXISTS "${_reconfigure_stamp}")
+                    file(WRITE "${_reconfigure_stamp}" "${BUILD_NUM_OUTPUT}")
+                    execute_process(
+                        COMMAND "${Python3_EXECUTABLE}" -c
+                            "import os; os.utime('${_reconfigure_stamp}', (9999999999, 9999999999))"
+                    )
+                else()
+                    file(WRITE "${_reconfigure_stamp}" "${BUILD_NUM_OUTPUT}")
+                endif()
+                if(NOT TARGET _build_number_invalidate_${ARG_PROJECT_KEY})
+                    add_custom_target(_build_number_invalidate_${ARG_PROJECT_KEY} ALL
+                        COMMAND ${CMAKE_COMMAND} -E touch "${_reconfigure_stamp}"
+                        COMMENT "Triggering reconfigure for build number increment (${ARG_PROJECT_KEY})"
+                    )
+                endif()
+            else()
+                # Ninja and others: write stamp at configure, delete at build.
+                # Ninja sees missing file → triggers reconfigure.
+                file(WRITE "${_reconfigure_stamp}" "${BUILD_NUM_OUTPUT}")
+                if(NOT TARGET _build_number_invalidate_${ARG_PROJECT_KEY})
+                    add_custom_target(_build_number_invalidate_${ARG_PROJECT_KEY} ALL
+                        COMMAND ${CMAKE_COMMAND} -E remove "${_reconfigure_stamp}"
+                        COMMENT "Invalidating build number configure stamp for ${ARG_PROJECT_KEY}"
+                    )
+                endif()
             endif()
         endif()
 
