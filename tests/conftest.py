@@ -23,8 +23,6 @@ def _start_server(tmp_path, monkeypatch, *, initial_data=None, accept=True):
     Use the rate_limited_server fixture for rate-limit-specific tests.
     """
     import server as server_module
-    from http.server import HTTPServer
-
     data_dir = str(tmp_path / "server-data")
     server_module.init_data_dir(data_dir)
 
@@ -35,7 +33,7 @@ def _start_server(tmp_path, monkeypatch, *, initial_data=None, accept=True):
     monkeypatch.setattr(server_module, 'accept_unknown', accept)
     monkeypatch.setattr(server_module, 'rate_limit', 0)  # disable rate limiting in tests
 
-    httpd = HTTPServer(('127.0.0.1', 0), server_module.BuildNumberHandler)
+    httpd = server_module.QuietHTTPServer(('127.0.0.1', 0), server_module.BuildNumberHandler)
     port = httpd.server_address[1]
 
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)

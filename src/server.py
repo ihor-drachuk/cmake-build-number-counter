@@ -19,6 +19,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 from validation import validate_project_key
 
+
+class QuietHTTPServer(HTTPServer):
+    """HTTPServer that silently handles client disconnects."""
+
+    def handle_error(self, request, client_address):
+        if issubclass(sys.exc_info()[0], ConnectionError):
+            pass
+        else:
+            super().handle_error(request, client_address)
+
 # Global state (initialized in main() or by test fixtures)
 DATA_DIR = None
 BUILD_NUMBERS_FILE = None
@@ -807,7 +817,7 @@ def main():
         print("Add project keys to this file to approve them, or use --accept-unknown flag")
 
     # Start server
-    server = HTTPServer((args.host, args.port), BuildNumberHandler)
+    server = QuietHTTPServer((args.host, args.port), BuildNumberHandler)
 
     print(f"Build Number Counter Server starting...")
     print(f"Listening on {args.host}:{args.port}")
