@@ -1,6 +1,6 @@
 # Build Number Counter (CBNC)
 
-[![CI](https://github.com/ihor-drachuk/build-number-counter/actions/workflows/test.yml/badge.svg)](https://github.com/ihor-drachuk/build-number-counter/actions/workflows/test.yml)
+[![CI](https://github.com/ihor-drachuk/cmake-build-number-counter/actions/workflows/test.yml/badge.svg)](https://github.com/ihor-drachuk/cmake-build-number-counter/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Automatic build number tracking for CMake projects.
@@ -41,7 +41,7 @@ project(MyApp VERSION 1.2.3.0 LANGUAGES CXX)  # Last component = 0
 include(FetchContent)
 FetchContent_Declare(
     build_number_counter
-    GIT_REPOSITORY https://github.com/ihor-drachuk/build-number-counter.git
+    GIT_REPOSITORY https://github.com/ihor-drachuk/cmake-build-number-counter.git
     GIT_TAG main
 )
 FetchContent_MakeAvailable(build_number_counter)
@@ -102,7 +102,7 @@ cmake_minimum_required(VERSION 3.20)
 # ---- CBNC: Build Number Counter (Configure Mode) ----
 include(FetchContent)
 FetchContent_Declare(build_number_counter
-    GIT_REPOSITORY https://github.com/ihor-drachuk/build-number-counter.git
+    GIT_REPOSITORY https://github.com/ihor-drachuk/cmake-build-number-counter.git
     GIT_TAG main)
 FetchContent_MakeAvailable(build_number_counter)
 
