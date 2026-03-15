@@ -19,6 +19,14 @@ Every `cmake --build` increments the counter and generates a C++ version header 
 - Multi-project support with independent counters
 - Force-set build number for resets and migrations
 
+## Supported Generators
+
+| Generator | Platforms |
+|-----------|-----------|
+| Unix Makefiles | Linux, macOS |
+| Ninja | Linux, macOS, Windows |
+| Visual Studio 17 (2022) | Windows |
+
 ## Quick Start
 
 **Prerequisites:** Python 3, CMake 3.20+
@@ -27,7 +35,9 @@ Every `cmake --build` increments the counter and generates a C++ version header 
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
+project(MyApp VERSION 1.2.3.0 LANGUAGES CXX)  # Last component = 0
 
+# ---- CBNC: Build Number Counter ----
 include(FetchContent)
 FetchContent_Declare(
     build_number_counter
@@ -36,8 +46,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(build_number_counter)
 
-project(MyApp VERSION 1.2.3.0 LANGUAGES CXX)  # Last component = 0
-
 list(APPEND CMAKE_MODULE_PATH "${build_number_counter_SOURCE_DIR}/src")
 include(CMakeBuildNumber)
 
@@ -45,6 +53,7 @@ increment_build_number(
     PROJECT_KEY "myapp"
     VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
 )
+# ---- End CBNC ----
 
 add_executable(myapp main.cpp)
 target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
@@ -90,6 +99,7 @@ Need the build number in `project(VERSION ...)`? Use configure mode — call **b
 ```cmake
 cmake_minimum_required(VERSION 3.20)
 
+# ---- CBNC: Build Number Counter (Configure Mode) ----
 include(FetchContent)
 FetchContent_Declare(build_number_counter
     GIT_REPOSITORY https://github.com/ihor-drachuk/build-number-counter.git
@@ -104,6 +114,7 @@ increment_build_number(
     PROJECT_KEY "myapp"
     OUTPUT_VARIABLE BUILD_NUM
 )
+# ---- End CBNC ----
 
 project(MyApp VERSION 1.2.3.${BUILD_NUM} LANGUAGES CXX)
 # PROJECT_VERSION = "1.2.3.42", PROJECT_VERSION_TWEAK = 42
