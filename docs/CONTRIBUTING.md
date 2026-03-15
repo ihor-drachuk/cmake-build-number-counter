@@ -1,6 +1,6 @@
 # Contributing
 
-Guide for developers working on the build-number-counter project.
+Guide for developers working on the cmake-build-number-counter project.
 
 ## Project Overview
 
@@ -42,7 +42,7 @@ Developer's machine              Build server
 ## Project Structure
 
 ```
-build-number-counter/
+cmake-build-number-counter/
 ├── src/
 │   ├── CMakeBuildNumber.cmake   # CMake module (increment_build_number function)
 │   ├── client.py                # Python client (server + local fallback)
