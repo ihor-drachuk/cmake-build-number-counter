@@ -2,7 +2,40 @@
 
 The build number server provides synchronized counters across multiple machines. It is **entirely optional** — everything works locally without it.
 
-## Starting the Server
+## Public Server
+
+A free community server is available for anyone — no registration, no tokens:
+
+```
+https://cbnc-server.net
+```
+
+**Quick setup** — add one line to your CMakeLists.txt:
+
+```cmake
+increment_build_number(
+    PROJECT_KEY "myapp"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
+    SERVER_URL "https://cbnc-server.net"
+)
+```
+
+Or set an environment variable instead (no CMake changes needed):
+
+```bash
+export BUILD_SERVER_URL=https://cbnc-server.net   # Linux/Mac
+set BUILD_SERVER_URL=https://cbnc-server.net      # Windows
+```
+
+> **Note:** The public server uses `--accept-unknown`, so any project key is automatically accepted. To avoid collisions, use a globally unique key like `mycompany-myapp-a3f8b2c91d4e` (org + project + random suffix).
+
+If you need authentication, custom rate limits, or want full control over your data, self-host your own server as described below.
+
+---
+
+## Self-Hosting
+
+### Starting the Server
 
 ```bash
 python src/server.py --accept-unknown         # auto-approve new projects
@@ -16,7 +49,7 @@ export BUILD_SERVER_URL=http://your-server:8080   # Linux/Mac
 set BUILD_SERVER_URL=http://your-server:8080      # Windows
 ```
 
-## CLI Flags
+### CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -30,7 +63,7 @@ set BUILD_SERVER_URL=http://your-server:8080      # Windows
 | `--ban-duration` | `600` | Temp ban duration in seconds |
 | `--ban-permanent` | off | Use persistent bans instead of temporary |
 
-## API Endpoints
+### API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -48,7 +81,7 @@ set BUILD_SERVER_URL=http://your-server:8080      # Windows
 {"project_key": "myproject", "version": 42}
 ```
 
-## Token Management
+### Token Management
 
 See [Security](SECURITY.md) for full authentication documentation.
 
@@ -59,7 +92,7 @@ python src/server.py --list-tokens
 python src/server.py --remove-token "ci"
 ```
 
-## Counter Management
+### Counter Management
 
 Set counters offline (no server process needed):
 
@@ -68,7 +101,7 @@ python src/server.py --set-counter --project-key myproject --version 42
 python src/server.py --set-counter --project-key myproject --version 0 --data-dir /var/lib/build-counter
 ```
 
-## Data Storage
+### Data Storage
 
 **Data file:** `server-data/build_numbers.json`
 
@@ -92,9 +125,9 @@ python src/server.py --set-counter --project-key myproject --version 0 --data-di
 
 To add/reset a project manually: stop the server, edit the JSON, restart.
 
-## Deployment
+### Deployment
 
-### Linux (systemd)
+#### Linux (systemd)
 
 Create `/etc/systemd/system/build-counter.service`:
 ```ini
@@ -118,7 +151,7 @@ sudo systemctl enable build-counter
 sudo systemctl start build-counter
 ```
 
-### Windows (NSSM)
+#### Windows (NSSM)
 
 Using [NSSM](https://nssm.cc/download):
 
@@ -128,7 +161,7 @@ nssm set BuildCounterServer AppDirectory "C:\path\to\build-counter"
 nssm start BuildCounterServer
 ```
 
-### Docker
+#### Docker
 
 ```bash
 # Quick start (strict mode: only pre-approved projects)
@@ -153,7 +186,7 @@ docker run --rm -v ./data:/data USERNAME/cbnc-server:prod \
 - `prod` — built from `main` branch
 - `stage` — built from `dev` branch
 
-### Railway
+#### Railway
 
 1. Create a new project, deploy from the Docker image (`USERNAME/cbnc-server:prod`) or from your GitHub repo (Railway will detect the Dockerfile automatically).
 

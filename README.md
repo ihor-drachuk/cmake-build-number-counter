@@ -136,17 +136,24 @@ Both modes support server sync:
 
 ## Team Synchronization (optional)
 
-For shared build numbers across machines, start the server:
+For shared build numbers across machines, add `SERVER_URL` to your CMakeLists.txt:
 
-```bash
-python src/server.py --accept-unknown
+```cmake
+increment_build_number(
+    PROJECT_KEY "myapp"
+    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
+    SERVER_URL "https://cbnc-server.net"      # ← public server, free, no auth
+)
 ```
 
-Set the URL on each machine:
+Or set an environment variable (no CMake changes needed):
+
 ```bash
-export BUILD_SERVER_URL=http://your-server:8080   # Linux/Mac
-set BUILD_SERVER_URL=http://your-server:8080      # Windows
+export BUILD_SERVER_URL=https://cbnc-server.net   # Linux/Mac
+set BUILD_SERVER_URL=https://cbnc-server.net      # Windows
 ```
+
+> **Public server** — a free community server at `https://cbnc-server.net` is available for anyone to use, no registration or tokens required. To avoid collisions, use a globally unique project key like `mycompany-myapp-a3f8b2c91d4e` (org + project + random suffix). For private use, you can [self-host](docs/SERVER.md#self-hosting) your own server.
 
 That's all — CMake picks it up automatically. See [Server Guide](docs/SERVER.md) for deployment, authentication, and configuration.
 
