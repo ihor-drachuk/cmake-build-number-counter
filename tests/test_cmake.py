@@ -658,6 +658,7 @@ increment_build_number(
 
 add_executable(test_app main.cpp)
 target_include_directories(test_app PRIVATE ${{CMAKE_BINARY_DIR}}/generated)
+add_dependencies(test_app generate_version_test-fetch-build)
 """)
 
     (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
@@ -763,6 +764,7 @@ increment_build_number(
 
 add_executable(test_app main.cpp)
 target_include_directories(test_app PRIVATE ${{CMAKE_BINARY_DIR}}/generated)
+add_dependencies(test_app generate_version_{project_key})
 """
 
 
