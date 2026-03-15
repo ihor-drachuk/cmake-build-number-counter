@@ -1,6 +1,6 @@
 # Build Number Counter (CBNC)
 
-[![CI](https://github.com/ihor-drachuk/cmake-build-number-counter/actions/workflows/test.yml/badge.svg)](https://github.com/ihor-drachuk/cmake-build-number-counter/actions/workflows/test.yml)
+[![CI](https://github.com/ihor-drachuk/cmake-build-number-counter/actions/workflows/ci.yml/badge.svg)](https://github.com/ihor-drachuk/cmake-build-number-counter/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Automatic build number tracking for CMake projects.
