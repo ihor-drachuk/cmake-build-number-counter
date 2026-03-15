@@ -243,19 +243,13 @@ function(increment_build_number)
 
             # Auto-reconfigure: force reconfigure on every cmake --build.
             #
-            # Strategy differs by generator because of how each checks
-            # CMAKE_CONFIGURE_DEPENDS:
-            #
-            # Ninja: checks deps, runs targets, then re-checks (restat).
-            #   Deleting the stamp works: Ninja sees it missing → reconfigure.
-            #   But future-mtime causes infinite loops (Ninja re-checks).
-            #
-            # Unix Makefiles: checks deps ONCE before running targets.
-            #   Deletion is ignored (missing file = no mtime to compare).
-            #   Need stamp mtime > Makefile mtime at check time.
-            #   Custom target touch at build time provides this for
-            #   subsequent builds, but the first build needs a bootstrap:
-            #   set stamp mtime to the far future at first configure.
+            # A stamp file registered in CMAKE_CONFIGURE_DEPENDS is modified
+            # by a custom target at build time, triggering reconfigure on the
+            # next build. The first build needs a bootstrap (stamp mtime <
+            # build system files after configure). Strategy per generator:
+            # Makefiles: far-future mtime (always newer than Makefile) + touch.
+            # Ninja: +1day future mtime, epoch neutralize on reconfig, + touch.
+            # Visual Studio: stamp delete (MSBuild always re-evaluates).
             set(_reconfigure_stamp "${CMAKE_BINARY_DIR}/_build_number_reconfigure_stamp_${ARG_PROJECT_KEY}")
             set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                 "${_reconfigure_stamp}")
@@ -278,9 +272,44 @@ function(increment_build_number)
                         COMMENT "Triggering reconfigure for build number increment (${ARG_PROJECT_KEY})"
                     )
                 endif()
+            elseif(CMAKE_GENERATOR MATCHES "Ninja")
+                # Ninja: future mtime bootstrap + epoch neutralize.
+                #
+                # Ninja triggers RERUN_CMAKE when a dep's mtime > build.ninja's.
+                # The stamp written during configure has mtime < build.ninja,
+                # so Ninja skips reconfigure on the first build.
+                #
+                # Fix: on first configure, set stamp mtime far into the future.
+                # Ninja sees stamp newer → RERUN_CMAKE. On that reconfigure,
+                # neutralize by setting stamp mtime to epoch (0), which is
+                # guaranteed < build.ninja — this stops the loop. The custom
+                # target then touches the stamp (mtime = now > build.ninja),
+                # priming the next build. Steady state:
+                # touch → reconfig → neutralize(epoch) → touch → ...
+                set(_reconfigure_sentinel "${CMAKE_BINARY_DIR}/_build_number_sentinel_${ARG_PROJECT_KEY}")
+                if(NOT EXISTS "${_reconfigure_sentinel}")
+                    file(WRITE "${_reconfigure_stamp}" "${BUILD_NUM_OUTPUT}")
+                    execute_process(
+                        COMMAND "${Python3_EXECUTABLE}" -c
+                            "import os,time; os.utime('${_reconfigure_stamp}',(time.time()+86400,time.time()+86400))"
+                    )
+                    file(WRITE "${_reconfigure_sentinel}" "1")
+                else()
+                    execute_process(
+                        COMMAND "${Python3_EXECUTABLE}" -c
+                            "import os; os.utime('${_reconfigure_stamp}',(0,0))"
+                    )
+                endif()
+                if(NOT TARGET _build_number_invalidate_${ARG_PROJECT_KEY})
+                    add_custom_target(_build_number_invalidate_${ARG_PROJECT_KEY} ALL
+                        COMMAND ${CMAKE_COMMAND} -E touch "${_reconfigure_stamp}"
+                        COMMENT "Triggering reconfigure for build number increment (${ARG_PROJECT_KEY})"
+                    )
+                endif()
             else()
-                # Ninja and others: write stamp at configure, delete at build.
-                # Ninja sees missing file → triggers reconfigure.
+                # Visual Studio and others: write stamp, delete at build time.
+                # MSBuild always re-evaluates, so stamp deletion reliably
+                # triggers reconfigure.
                 file(WRITE "${_reconfigure_stamp}" "${BUILD_NUM_OUTPUT}")
                 if(NOT TARGET _build_number_invalidate_${ARG_PROJECT_KEY})
                     add_custom_target(_build_number_invalidate_${ARG_PROJECT_KEY} ALL
