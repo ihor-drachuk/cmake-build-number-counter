@@ -1,3 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["cmake: tests requiring CMake and a C++ compiler"]
+markers = [
+    "cmake: tests requiring CMake and a C++ compiler",
+    "docker: tests requiring Docker (set CBNC_TEST_DOCKER=1)",
+]

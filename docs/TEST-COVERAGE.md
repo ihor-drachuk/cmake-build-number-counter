@@ -89,6 +89,19 @@ Checklist of features and their test status. Update when adding new features or 
 | Corrupted banned_ips.json | NO | — | |
 | Concurrent increments (race condition) | NO | — | |
 
+## Docker (`Dockerfile`)
+
+Tests gated by `CBNC_TEST_DOCKER=1`, marked `@pytest.mark.docker`.
+
+| Feature | Status | Test File | Notes |
+|---------|--------|-----------|-------|
+| Container starts and responds (GET /) | YES | test_docker | `test_root_endpoint` |
+| Increment via container | YES | test_docker | `test_increment` |
+| Data persisted to volume | YES | test_docker | `test_data_persisted_to_volume` |
+| Restart preserves data | YES | test_docker | `test_restart_preserves_data` |
+| Custom --port flag | YES | test_docker | `test_custom_port` |
+| Token auth via container | NO | — | |
+
 ## Cross-Feature Integration
 
 | Feature | Status | Test File | Notes |

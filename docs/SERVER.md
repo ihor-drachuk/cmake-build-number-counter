@@ -127,3 +127,46 @@ nssm install BuildCounterServer "C:\Python39\python.exe" "C:\path\to\src\server.
 nssm set BuildCounterServer AppDirectory "C:\path\to\build-counter"
 nssm start BuildCounterServer
 ```
+
+### Docker
+
+```bash
+# Quick start (strict mode: only pre-approved projects)
+docker run -d -p 8080:8080 -v ./data:/data USERNAME/cbnc-server:prod
+
+# Auto-approve new projects
+docker run -d -p 8080:8080 -v ./data:/data USERNAME/cbnc-server:prod \
+    --data-dir /data --accept-unknown
+
+# With custom flags
+docker run -d -p 9000:9000 -v ./data:/data USERNAME/cbnc-server:prod \
+    --data-dir /data --accept-unknown --port 9000 --rate-limit 20
+
+# Token management (one-off container)
+docker run --rm -v ./data:/data USERNAME/cbnc-server:prod \
+    --data-dir /data --add-token --token-name "ci" --token-projects "my-app"
+```
+
+**Volume:** The container stores all data (counters, tokens, bans) in `/data`. Mount a host directory or Docker volume to persist across restarts.
+
+**Tags:**
+- `prod` — built from `main` branch
+- `stage` — built from `dev` branch
+
+### Railway
+
+1. Create a new project, deploy from the Docker image (`USERNAME/cbnc-server:prod`) or from your GitHub repo (Railway will detect the Dockerfile automatically).
+
+2. In service settings, set **Custom Start Command** to override the default CMD:
+   ```
+   python server.py --data-dir /data --accept-unknown
+   ```
+
+3. Under **Networking**, set the public port to `8080` (the server's default). Alternatively, add `--port <N>` to the start command to match whatever port Railway expects.
+
+4. **Persistent storage:** Railway provides ephemeral filesystems by default — data is lost on redeploy. To persist counters and tokens, attach a [Railway Volume](https://docs.railway.com/reference/volumes) mounted at `/data`.
+
+5. **Token management:** run a one-off command via Railway CLI or dashboard shell:
+   ```
+   python server.py --data-dir /data --add-token --token-name "ci" --token-projects "my-app"
+   ```

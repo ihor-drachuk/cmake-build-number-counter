@@ -10,11 +10,12 @@ Automatic build number incrementing for CMake projects with optional central ser
 
 ## Architecture
 
-Four components in `src/`:
+Four components in `src/` + Docker:
 - **`server.py`** — HTTP server (`POST /increment`, `POST /set`), stores counters in JSON, thread-safe with `file_lock`. Global state: `DATA_DIR`, `BUILD_NUMBERS_FILE`, `TOKENS_FILE`, `accept_unknown`, `max_body_size`, `max_projects`, `rate_limit`, `ban_duration`, `ban_permanent` — initialized via `init_data_dir()` in `main()` or by test fixtures. Rate limiting: per-IP sliding window with `rate_lock`, `rate_tracker`, `temp_bans`, `permanent_bans`; permanent bans persisted to `banned_ips.json`. Optional token auth via `tokens.json` (loaded per-request, supports project-scoped, wildcard, and admin tokens). Token management CLI: `--add-token`, `--remove-token`, `--list-tokens`. Counter management CLI: `--set-counter --project-key X --version N` (offline, no HTTP server).
 - **`client.py`** — tries server first, falls back to local file, saves `.sync` state for later reconnection. Entry point: `get_build_number()` returns `(number, was_local)`. Force-set: `force_set_build_number()` sets exact value via `POST /set` or locally. Supports `--server-token` / `BUILD_SERVER_TOKEN` for authenticated requests.
 - **`validation.py`** — shared validation (project key format). Imported by both server and client. CMake equivalent is inline in the function.
 - **`CMakeBuildNumber.cmake`** — provides `increment_build_number()` function. Two modes: `BUILD` (default, custom target at build time) and `CONFIGURE` (execute_process at configure time, can be called before `project()`). Parameters: `MODE`, `OUTPUT_VARIABLE`, `NO_INCREMENT`, `FORCE_VERSION`, `VERSION_HEADER`, `SERVER_URL`, `SERVER_TOKEN`, `LOCAL_FILE`, `TARGET`, `QUIET`. Configure mode auto-reconfigures on every build via a stamp file: created at configure, deleted by a custom target at build time, triggering reconfigure on next build.
+- **`Dockerfile`** — lightweight container running the server. `WORKDIR /app/src` (needed for bare `from validation import`). Data volume at `/data`. `ENTRYPOINT ["python", "server.py"]`, CMD provides defaults (`--data-dir /data`).
 
 **Data flow:**
 1. `cmake --build` triggers the custom target (BUILD mode) or reconfigure (CONFIGURE mode)
@@ -43,10 +44,13 @@ tests/                  # pytest tests
   test_server.py        #   Server tests via in-process HTTPServer in a thread
   test_integration.py   #   End-to-end via subprocess (real server + real client)
   test_cmake.py         #   CMake tests for BUILD and CONFIGURE modes, marked @pytest.mark.cmake
+  test_docker.py        #   Docker image tests, marked @pytest.mark.docker, gated by CBNC_TEST_DOCKER=1
+Dockerfile              # Server container image
+.dockerignore           # Whitelist: only src/ enters build context
 examples/               # 4 self-contained CMake example projects (1-simple, 2-with-server, 3-custom-location, 4-configure-mode)
 docs/                   # Detailed docs (API, server, security, troubleshooting)
   adr/                  #   Architecture Decision Records
-.github/workflows/      # CI: test.yml (Python matrix + CMake matrix)
+.github/workflows/      # CI: ci.yml (Python tests → CMake tests → Docker test → Docker push)
 ```
 
 ## Build & test
@@ -74,6 +78,10 @@ python src/server.py --set-counter --project-key test --version 42
 
 # Force-set via client
 python src/client.py --project-key test --force-version 42 --quiet
+
+# Build Docker image and run Docker tests
+docker build -t cbnc-server:test .
+CBNC_TEST_DOCKER=1 CBNC_DOCKER_IMAGE=cbnc-server:test python -m pytest tests/test_docker.py -v
 ```
 
 ## Key conventions
@@ -84,6 +92,7 @@ python src/client.py --project-key test --force-version 42 --quiet
 - Build number increments on every `cmake --build` in both modes (BUILD via custom target, CONFIGURE via auto-reconfigure)
 - Tests use `tmp_path` for full isolation — no leftover files in the repo
 - **Increment tests must verify at least 2 consecutive increments via separate cmake invocations** (2 separate `cmake --build` or 2 separate `cmake configure` runs) — a single increment (0→1) is not sufficient to confirm correctness. Do not just call `increment_build_number()` twice in the same CMakeLists.txt — that tests in-process behavior, not real usage.
+- Docker tests gated behind `CBNC_TEST_DOCKER=1` env var, marked with `@pytest.mark.docker`. Image name from `CBNC_DOCKER_IMAGE` (default `cbnc-server:test`).
 - **Test coverage map:** see `docs/TEST-COVERAGE.md` for a feature-by-feature test status table. Update it when adding new features or tests.
 
 ## Engineering principles
