@@ -33,6 +33,8 @@ jobs:
             generator: "Ninja"
           - os: windows-latest
             generator: "Visual Studio 17 2022"
+          - os: windows-latest
+            generator: "Ninja"
 
     runs-on: ${{ matrix.os }}
     name: cmake (${{ matrix.os }}, ${{ matrix.generator }})
@@ -43,9 +45,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Ninja
-        if: matrix.generator == 'Ninja'
+      - name: Install Ninja (Linux)
+        if: matrix.generator == 'Ninja' && runner.os == 'Linux'
         run: sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (Windows)
+        if: matrix.generator == 'Ninja' && runner.os == 'Windows'
+        run: choco install ninja
+
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows' && matrix.generator == 'Ninja'
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
 
       - name: Install pytest
         run: pip install pytest
