@@ -4,7 +4,6 @@ WORKDIR /app/src
 COPY src/ /app/src/
 
 RUN mkdir -p /data
-VOLUME /data
 
 EXPOSE 8080
 
