@@ -171,6 +171,13 @@ python src/client.py --project-key myproject --force-version 0  # reset
 
 Output formats: `plain` (default), `cmake`, `json`.
 
+### Exit codes
+
+- **0** — success (build number printed to stdout)
+- **1** — error: invalid project key, invalid `--force-version`, or **server rejection** (HTTP 401, 403, 429)
+
+Server rejections (authentication failure, forbidden project, rate-limit ban) cause exit code 1 and a message to stderr. The `--quiet` flag does **not** suppress rejection errors. Transient failures (network errors, timeouts, HTTP 500) still fall back to the local counter silently.
+
 ## Configuration Priority
 
 ### Server URL

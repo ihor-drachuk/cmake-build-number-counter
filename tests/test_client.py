@@ -1,10 +1,13 @@
+import io
 import json
 import os
+import urllib.error
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 import client
+from client import ServerRejectedError
 
 
 class TestLoadLocalCounter:
@@ -216,3 +219,61 @@ class TestIncrementOnServerAuth:
 
         req = mock_urlopen.call_args[0][0]
         assert req.get_header('Authorization') is None
+
+
+def _make_http_error(code, body_dict):
+    """Create a urllib HTTPError with a JSON body."""
+    body = json.dumps(body_dict).encode('utf-8')
+    return urllib.error.HTTPError(
+        url="http://fake:8080/increment",
+        code=code,
+        msg=f"HTTP {code}",
+        hdrs={},
+        fp=io.BytesIO(body),
+    )
+
+
+class TestServerRejection:
+    """Tests that server rejections (401, 403, 429) raise ServerRejectedError
+    instead of silently falling back to local counter."""
+
+    @pytest.mark.parametrize("code", [401, 403, 429])
+    def test_increment_rejection_raises(self, code):
+        error = _make_http_error(code, {"error": f"Rejected with {code}"})
+        with patch('client.urllib.request.urlopen', side_effect=error):
+            with pytest.raises(ServerRejectedError) as exc_info:
+                client.increment_on_server("http://fake:8080", "proj")
+            assert exc_info.value.status_code == code
+            assert f"Rejected with {code}" in exc_info.value.message
+
+    @pytest.mark.parametrize("code", [401, 403, 429])
+    def test_set_rejection_raises(self, code):
+        error = _make_http_error(code, {"error": f"Rejected with {code}"})
+        with patch('client.urllib.request.urlopen', side_effect=error):
+            with pytest.raises(ServerRejectedError) as exc_info:
+                client.set_on_server("http://fake:8080", "proj", 42)
+            assert exc_info.value.status_code == code
+
+    def test_server_error_500_returns_none(self):
+        """Non-rejection HTTP errors (e.g. 500) still return None (transient)."""
+        error = _make_http_error(500, {"error": "Internal server error"})
+        with patch('client.urllib.request.urlopen', side_effect=error):
+            result = client.increment_on_server("http://fake:8080", "proj")
+        assert result is None
+
+    def test_get_build_number_rejection_propagates(self, tmp_local_file):
+        """ServerRejectedError propagates through get_build_number (no fallback)."""
+        with patch('client.increment_on_server',
+                   side_effect=ServerRejectedError(429, "Banned")):
+            with pytest.raises(ServerRejectedError):
+                client.get_build_number("proj", server_url="http://fake:8080",
+                                        local_file=tmp_local_file)
+
+    def test_force_set_rejection_propagates(self, tmp_local_file):
+        """ServerRejectedError propagates through force_set_build_number (no fallback)."""
+        with patch('client.set_on_server',
+                   side_effect=ServerRejectedError(401, "Invalid token")):
+            with pytest.raises(ServerRejectedError):
+                client.force_set_build_number("proj", 42,
+                                              server_url="http://fake:8080",
+                                              local_file=tmp_local_file)

@@ -35,8 +35,8 @@ Checklist of features and their test status. Update when adding new features or 
 | Auth: project-scoped token | YES | test_cmake | `test_server_auth_project_token` |
 | Auth: wildcard token | YES | test_cmake | `test_server_auth_wildcard_token` |
 | Auth: admin token | YES | test_cmake | `test_server_auth_admin_token` |
-| Auth: wrong token → local fallback | YES | test_cmake | `test_server_auth_wrong_token_falls_back` |
-| Auth: wrong project → local fallback | YES | test_cmake | `test_server_auth_wrong_project_falls_back` |
+| Auth: wrong token → build fails | YES | test_cmake | `test_server_auth_wrong_token_fails_build` |
+| Auth: wrong project → build fails | YES | test_cmake | `test_server_auth_wrong_project_fails_build` |
 | Custom TARGET name | NO | — | |
 | QUIET flag suppresses output | NO | — | Used but not explicitly verified |
 | Custom LOCAL_FILE path | NO | — | Uses default in all tests |
@@ -48,6 +48,8 @@ Checklist of features and their test status. Update when adding new features or 
 | Local increment (no server) | YES | test_client | `TestIncrementLocally`, `TestGetBuildNumber` |
 | Server increment | YES | test_client | `TestIncrementOnServer` (mocked) |
 | Server unavailable → local fallback | YES | test_client, test_integration | |
+| Server rejection (401/403/429) → error | YES | test_client, test_integration | `TestServerRejection` |
+| Server error (500) → local fallback | YES | test_client | `test_server_error_500_returns_none` |
 | Sync state (.sync file) | YES | test_client | `TestSyncState` |
 | Offline → online sync | YES | test_integration | `TestClientServerIntegration`, `TestOnlineOfflineOnline` |
 | Online → offline → online (continuous) | YES | test_integration | `TestOnlineOfflineOnline` |
@@ -94,7 +96,7 @@ Checklist of features and their test status. Update when adding new features or 
 | CMake → client → server (BUILD mode) | YES | test_cmake | `test_server_build_mode_cmake_params` |
 | CMake → client → server (CONFIGURE mode) | YES | test_cmake | `test_server_configure_mode_cmake_params` |
 | CMake → client → server with auth | YES | test_cmake | `test_server_auth_*` (5 tests) |
-| CMake → client → server rejection → local fallback | YES | test_cmake | `test_server_auth_wrong_*` (2 tests) |
+| CMake → client → server rejection → build fails | YES | test_cmake | `test_server_auth_wrong_*_fails_build` (2 tests) |
 | Client → server → offline → online sync | YES | test_integration | `TestClientServerIntegration`, `TestOnlineOfflineOnline` |
 | CMake + server + rate limiting | NO | — | |
 | CMake + multiple features combined | NO | — | |
