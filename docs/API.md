@@ -43,6 +43,9 @@ increment_build_number(
     PROJECT_KEY "myapp"
     VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
 )
+
+add_executable(myapp main.cpp)
+add_dependencies(myapp generate_version_myapp)  # required for Ninja
 ```
 
 ### Configure Mode
@@ -120,12 +123,14 @@ increment_build_number(
     PROJECT_KEY "frontend"
     VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version_frontend.h"
 )
+add_dependencies(frontend_app generate_version_frontend)
 
 project(Backend VERSION 7.0.5.0)
 increment_build_number(
     PROJECT_KEY "backend"
     VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version_backend.h"
 )
+add_dependencies(backend_app generate_version_backend)
 ```
 
 ### Installation Without FetchContent
@@ -144,6 +149,7 @@ increment_build_number(
 
 add_executable(myapp main.cpp)
 target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
+add_dependencies(myapp generate_version_myapp)
 ```
 
 ## Client CLI

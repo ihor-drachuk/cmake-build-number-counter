@@ -18,6 +18,7 @@ increment_build_number(
 # Create executable
 add_executable(server_example main.cpp)
 target_include_directories(server_example PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_dependencies(server_example generate_version_example-with-server)
 
 message(STATUS "========================================")
 message(STATUS "Example 2: Using Central Build Server")

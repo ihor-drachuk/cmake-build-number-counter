@@ -48,6 +48,7 @@ increment_build_number(
 
 add_executable(myapp main.cpp)
 target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
+add_dependencies(myapp generate_version_myapp)
 ```
 
 ### 2. Use in your code
