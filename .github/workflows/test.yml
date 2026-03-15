@@ -23,7 +23,19 @@ jobs:
         run: python -m pytest tests/ -v --tb=short -m "not cmake"
 
   cmake-tests:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            generator: "Unix Makefiles"
+          - os: ubuntu-latest
+            generator: "Ninja"
+          - os: windows-latest
+            generator: "Visual Studio 17 2022"
+
+    runs-on: ${{ matrix.os }}
+    name: cmake (${{ matrix.os }}, ${{ matrix.generator }})
     steps:
       - uses: actions/checkout@v6
 
@@ -31,8 +43,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Ninja
+        if: matrix.generator == 'Ninja'
+        run: sudo apt-get install -y ninja-build
+
       - name: Install pytest
         run: pip install pytest
 
       - name: Run CMake tests
+        env:
+          CMAKE_GENERATOR: ${{ matrix.generator }}
         run: python -m pytest tests/ -v -m cmake --tb=short
