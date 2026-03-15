@@ -15,6 +15,20 @@ import urllib.error
 from pathlib import Path
 from validation import validate_project_key
 
+
+class ServerRejectedError(Exception):
+    """Server explicitly rejected the request (401, 403, 429).
+
+    These are not transient failures — the server is reachable but denying
+    access.  The build should fail, not fall back to the local counter.
+    """
+
+    def __init__(self, status_code, message):
+        self.status_code = status_code
+        self.message = message
+        super().__init__(f"Server rejected request (HTTP {status_code}): {message}")
+
+
 # Default local file for storing fallback counter
 DEFAULT_LOCAL_FILE = "build_number.txt"
 
@@ -121,6 +135,8 @@ def increment_on_server(server_url, project_key, local_version=None, server_toke
             error_msg = error_data.get('error', str(e))
         except Exception:
             error_msg = str(e)
+        if e.code in (401, 403, 429):
+            raise ServerRejectedError(e.code, error_msg)
         log_message(f"Server error: {error_msg}")
         return None
     except urllib.error.URLError as e:
@@ -170,6 +186,8 @@ def set_on_server(server_url, project_key, version, server_token=None):
             error_msg = error_data.get('error', str(e))
         except Exception:
             error_msg = str(e)
+        if e.code in (401, 403, 429):
+            raise ServerRejectedError(e.code, error_msg)
         log_message(f"Server error: {error_msg}")
         return None
     except urllib.error.URLError as e:
@@ -371,24 +389,29 @@ Examples:
         log_message = lambda *a, **k: None
 
     # Force-set or normal increment
-    if args.force_version is not None:
-        if args.force_version < 0:
-            print("Error: --force-version must be >= 0", file=sys.stderr)
-            return 1
-        build_number, was_local = force_set_build_number(
-            args.project_key,
-            args.force_version,
-            server_url,
-            args.local_file,
-            server_token,
-        )
-    else:
-        build_number, was_local = get_build_number(
-            args.project_key,
-            server_url,
-            args.local_file,
-            server_token,
-        )
+    try:
+        if args.force_version is not None:
+            if args.force_version < 0:
+                print("Error: --force-version must be >= 0", file=sys.stderr)
+                return 1
+            build_number, was_local = force_set_build_number(
+                args.project_key,
+                args.force_version,
+                server_url,
+                args.local_file,
+                server_token,
+            )
+        else:
+            build_number, was_local = get_build_number(
+                args.project_key,
+                server_url,
+                args.local_file,
+                server_token,
+            )
+    except ServerRejectedError as e:
+        # Print directly to stderr — --quiet must NOT suppress rejections
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
     # Output result
     output = format_output(build_number, args.output_format, args.project_key)

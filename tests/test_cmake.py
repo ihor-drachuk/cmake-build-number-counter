@@ -1007,8 +1007,8 @@ def test_server_auth_env_var_token(tmp_path, cmake_auth_server):
 # --- Auth: rejection and fallback ---
 
 @pytest.mark.cmake
-def test_server_auth_wrong_token_falls_back(tmp_path, cmake_auth_server):
-    """Wrong token causes server rejection; client falls back to local counter."""
+def test_server_auth_wrong_token_fails_build(tmp_path, cmake_auth_server):
+    """Wrong token causes server rejection (401); build fails instead of silent fallback."""
     url = cmake_auth_server['url']
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists(
@@ -1022,14 +1022,9 @@ def test_server_auth_wrong_token_falls_back(tmp_path, cmake_auth_server):
     assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
 
     result = cmake_build(build_dir)
-    assert result.returncode == 0, f"First build failed (should fallback):\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
-
-    result = cmake_build(build_dir)
-    assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
-
-    assert build2 == build1 + 1, f"Local fallback increment failed: {build1} -> {build2}"
+    assert result.returncode != 0, "Build should fail on auth rejection"
+    combined = result.stdout + result.stderr
+    assert "Server rejected" in combined or "Invalid token" in combined
 
 
 @pytest.mark.cmake
@@ -1118,8 +1113,8 @@ increment_build_number(
 
 
 @pytest.mark.cmake
-def test_server_auth_wrong_project_falls_back(tmp_path, cmake_auth_server):
-    """Valid token but wrong project causes rejection; client falls back to local."""
+def test_server_auth_wrong_project_fails_build(tmp_path, cmake_auth_server):
+    """Valid token but wrong project causes rejection (401); build fails."""
     url = cmake_auth_server['url']
     token = cmake_auth_server['project_token']  # only for "cmake-test-project"
     source_dir = write_temp_cmakelists(
@@ -1134,11 +1129,6 @@ def test_server_auth_wrong_project_falls_back(tmp_path, cmake_auth_server):
     assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
 
     result = cmake_build(build_dir)
-    assert result.returncode == 0, f"First build failed (should fallback):\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
-
-    result = cmake_build(build_dir)
-    assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
-
-    assert build2 == build1 + 1, f"Local fallback increment failed: {build1} -> {build2}"
+    assert result.returncode != 0, "Build should fail on auth rejection"
+    combined = result.stdout + result.stderr
+    assert "Server rejected" in combined or "does not have access" in combined

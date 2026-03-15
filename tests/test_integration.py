@@ -13,8 +13,13 @@ CLIENT_PY = os.path.join(SRC_DIR, 'client.py')
 SERVER_PY = os.path.join(SRC_DIR, 'server.py')
 
 
-def run_client(project_key, local_file, server_url=None, quiet=True, server_token=None):
-    """Run client.py as subprocess, return stdout stripped."""
+def run_client(project_key, local_file, server_url=None, quiet=True, server_token=None,
+               expect_failure=False):
+    """Run client.py as subprocess.
+
+    Returns stdout stripped on success, or the full CompletedProcess when
+    expect_failure=True (caller checks returncode and stderr).
+    """
     cmd = [sys.executable, CLIENT_PY, '--project-key', project_key, '--local-file', local_file]
     if server_url:
         cmd += ['--server-url', server_url]
@@ -23,6 +28,8 @@ def run_client(project_key, local_file, server_url=None, quiet=True, server_toke
     if quiet:
         cmd += ['--quiet']
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    if expect_failure:
+        return result
     assert result.returncode == 0, f"client.py failed: {result.stderr}"
     return result.stdout.strip()
 
@@ -251,8 +258,8 @@ class TestAuthIntegration:
             proc.terminate()
             proc.wait(timeout=5)
 
-    def test_rejected_without_token_falls_back(self, tmp_path):
-        """Server with auth enabled, client sends no token, falls back to local."""
+    def test_rejected_without_token_fails(self, tmp_path):
+        """Server with auth enabled, client sends no token → build fails."""
         data_dir = str(tmp_path / "server-data")
         port = pick_free_port()
         server_url = f"http://127.0.0.1:{port}"
@@ -273,36 +280,42 @@ class TestAuthIntegration:
             wait_for_server(server_url)
             local_file = str(tmp_path / "counter.txt")
 
-            # No token → 401 → falls back to local
-            result = run_client("proj", local_file, server_url=server_url)
-            assert result == "1"  # local fallback
+            # No token → 401 → client exits with error
+            result = run_client("proj", local_file, server_url=server_url,
+                                expect_failure=True)
+            assert result.returncode != 0
+            assert "Server rejected" in result.stderr
+            assert "401" in result.stderr
         finally:
             proc.terminate()
             proc.wait(timeout=5)
 
 
 class TestRateLimitIntegration:
-    def test_rate_limit_triggers_local_fallback(self, tmp_path):
-        """Client falls back to local when rate-limited by server."""
+    def test_rate_limit_fails_build(self, tmp_path):
+        """Client fails when rate-limited by server (no silent fallback)."""
         data_dir = str(tmp_path / "server-data")
         port = pick_free_port()
         server_url = f"http://127.0.0.1:{port}"
 
-        proc = start_server(port, data_dir, rate_limit=2, ban_duration=2)
+        # rate_limit=3: wait_for_server uses 1 slot, leaving 2 for client
+        proc = start_server(port, data_dir, rate_limit=3, ban_duration=2)
         try:
             wait_for_server(server_url)
             local_file = str(tmp_path / "counter.txt")
 
-            # First 2 requests succeed on server (rate_limit=2)
+            # First 2 requests succeed on server (2 of 3 slots remaining)
             r1 = run_client("rate-test", local_file, server_url=server_url)
             r2 = run_client("rate-test", local_file, server_url=server_url)
             assert r1 == "1"
             assert r2 == "2"
 
-            # 3rd request exceeds limit → 429 → client falls back to local
-            # Client still returns an incrementing number (local fallback)
-            r3 = run_client("rate-test", local_file, server_url=server_url)
-            assert int(r3) >= 3
+            # 3rd client request exceeds limit → 429 → client exits with error
+            r3 = run_client("rate-test", local_file, server_url=server_url,
+                            expect_failure=True)
+            assert r3.returncode != 0
+            assert "Server rejected" in r3.stderr
+            assert "429" in r3.stderr
         finally:
             proc.terminate()
             proc.wait(timeout=5)
