@@ -20,7 +20,7 @@ add_executable(simple_example main.cpp)
 target_include_directories(simple_example PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # Ensure version.h is generated before compiling (required for parallel builds like Ninja)
-add_dependencies(simple_example generate_version_example-simple)
+add_dependencies(simple_example generate_version_example-simple)  # target name = generate_version_{PROJECT_KEY}
 
 message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "Version: ${PROJECT_VERSION}")

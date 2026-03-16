@@ -35,7 +35,7 @@ DEFAULT_LOCAL_FILE = "build_number.txt"
 
 def log_message(message, file=sys.stderr):
     """Print log message to stderr."""
-    print(message, file=file)
+    print(f"[CBNC] {message}", file=file)
 
 
 def load_local_counter(local_file):
@@ -245,16 +245,24 @@ def get_build_number(project_key, server_url=None, local_file=DEFAULT_LOCAL_FILE
         if build_number is not None:
             # Server succeeded
             if pending_sync is not None:
-                log_message(f"Successfully synced local version {pending_sync} to server")
+                log_message(f"Successfully synced local version {pending_sync} to server for '{project_key}'")
                 clear_local_sync_state(local_file)
 
             # Update local counter to match server
             save_local_counter(local_file, build_number)
-            log_message(f"Build number from server: {build_number}")
+            log_message(f"Build number from server for '{project_key}': {build_number}")
             return build_number, False
 
-    # Server not available or no URL provided - use local fallback
-    build_number = increment_locally(local_file, project_key)
+    # Server not available or no URL provided
+    if server_url:
+        # Server was configured but unavailable — real fallback
+        build_number = increment_locally(local_file, project_key)
+    else:
+        # No server configured — purely local, no warning, no sync state
+        current = load_local_counter(local_file)
+        build_number = current + 1
+        save_local_counter(local_file, build_number)
+        log_message(f"Build number for '{project_key}': {build_number}")
     return build_number, True
 
 
@@ -281,14 +289,17 @@ def force_set_build_number(project_key, version, server_url=None, local_file=DEF
         if result is not None:
             save_local_counter(local_file, result)
             clear_local_sync_state(local_file)
-            log_message(f"Force-set build number on server: {result}")
+            log_message(f"Force-set build number on server for '{project_key}': {result}")
             return result, False
 
     # Server unavailable or no URL -- set locally only
     save_local_counter(local_file, version)
     clear_local_sync_state(local_file)
-    log_message(f"WARNING: Force-set build number LOCALLY only for '{project_key}': {version}")
-    log_message(f"Server counter was NOT updated. Sync may override this value later.")
+    if server_url:
+        log_message(f"WARNING: Force-set build number LOCALLY only for '{project_key}': {version}")
+        log_message(f"Server counter was NOT updated. Sync may override this value later.")
+    else:
+        log_message(f"Force-set build number for '{project_key}': {version}")
     return version, True
 
 

@@ -57,7 +57,7 @@ increment_build_number(
 
 add_executable(myapp main.cpp)
 target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
-add_dependencies(myapp generate_version_myapp)
+add_dependencies(myapp generate_version_myapp)  # target name = generate_version_{PROJECT_KEY}
 ```
 
 ### 2. Use in your code
@@ -134,7 +134,7 @@ Both modes support server sync:
 - **Server available** — counter incremented atomically on the server
 - **Server goes down** — seamless fallback to local, auto-sync when it comes back
 
-## Team Synchronization (optional)
+## Team/CI Synchronization (optional)
 
 For shared build numbers across machines, add `SERVER_URL` to your CMakeLists.txt:
 

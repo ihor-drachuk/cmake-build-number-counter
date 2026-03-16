@@ -221,6 +221,71 @@ class TestIncrementOnServerAuth:
         assert req.get_header('Authorization') is None
 
 
+class TestLogMessages:
+    """Tests that log messages are appropriate for each scenario."""
+
+    @pytest.fixture(autouse=True)
+    def capture_logs(self):
+        """Capture log_message() calls into a list."""
+        self.logs = []
+        original = client.log_message
+        client.log_message = lambda msg, **kw: self.logs.append(f"[CBNC] {msg}")
+        yield
+        client.log_message = original
+
+    def _log_text(self):
+        return "\n".join(self.logs)
+
+    def test_no_warning_without_server(self, tmp_local_file):
+        """No WARNING when server is not configured (purely local)."""
+        client.get_build_number("test", server_url=None, local_file=tmp_local_file)
+        assert "WARNING" not in self._log_text()
+
+    def test_no_sync_message_without_server(self, tmp_local_file):
+        """No 'will sync to server' when server is not configured."""
+        client.get_build_number("test", server_url=None, local_file=tmp_local_file)
+        assert "sync" not in self._log_text().lower()
+
+    def test_no_sync_file_without_server(self, tmp_local_file):
+        """No .sync file created when server is not configured."""
+        client.get_build_number("test", server_url=None, local_file=tmp_local_file)
+        assert not os.path.exists(tmp_local_file + ".sync")
+
+    def test_warning_on_server_fallback(self, tmp_local_file):
+        """WARNING appears when server is configured but unreachable."""
+        client.get_build_number("test", server_url="http://localhost:1",
+                                local_file=tmp_local_file)
+        assert "WARNING" in self._log_text()
+
+    def test_project_key_in_local_message(self, tmp_local_file):
+        """Project key appears in purely-local message."""
+        client.get_build_number("my-proj", server_url=None, local_file=tmp_local_file)
+        assert "my-proj" in self._log_text()
+
+    def test_project_key_in_server_message(self, tmp_local_file):
+        """Project key appears in server success message."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"build_number": 42}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with patch('client.urllib.request.urlopen', return_value=mock_response):
+            client.get_build_number("my-proj", server_url="http://fake:8080",
+                                    local_file=tmp_local_file)
+        assert "my-proj" in self._log_text()
+
+    def test_force_set_no_warning_without_server(self, tmp_local_file):
+        """Force-set without server: no WARNING."""
+        client.force_set_build_number("test", 5, server_url=None,
+                                      local_file=tmp_local_file)
+        assert "WARNING" not in self._log_text()
+
+    def test_force_set_warning_on_server_fallback(self, tmp_local_file):
+        """Force-set with unreachable server: WARNING appears."""
+        client.force_set_build_number("test", 5, server_url="http://localhost:1",
+                                      local_file=tmp_local_file)
+        assert "WARNING" in self._log_text()
+
+
 def _make_http_error(code, body_dict):
     """Create a urllib HTTPError with a JSON body."""
     body = json.dumps(body_dict).encode('utf-8')

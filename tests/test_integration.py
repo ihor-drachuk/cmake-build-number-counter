@@ -124,22 +124,22 @@ class TestClientServerIntegration:
             proc.wait(timeout=5)
 
     def test_sync_after_offline(self, tmp_path):
-        """Client works offline, then syncs when server becomes available."""
+        """Client works offline (server configured but unreachable), then syncs."""
         local_file = str(tmp_path / "counter.txt")
 
-        # Work offline: get 1, 2
-        assert run_client("sync-test", local_file) == "1"
-        assert run_client("sync-test", local_file) == "2"
-
-        # Start server
+        # Start server so we know the port, then stop it to simulate outage
         data_dir = str(tmp_path / "server-data")
         port = pick_free_port()
         server_url = f"http://127.0.0.1:{port}"
 
+        # Work offline with server configured but unreachable: get 1, 2
+        assert run_client("sync-test", local_file, server_url=server_url) == "1"
+        assert run_client("sync-test", local_file, server_url=server_url) == "2"
+
+        # Start server — client should sync local=2, then increment to 3
         proc = start_server(port, data_dir)
         try:
             wait_for_server(server_url)
-            # Next call should sync local=2 to server, then increment to 3
             result = run_client("sync-test", local_file, server_url=server_url)
             assert result == "3"
         finally:

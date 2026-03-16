@@ -232,9 +232,14 @@ function(increment_build_number)
                 message(FATAL_ERROR "increment_build_number: Failed to get build number: ${BUILD_NUM_ERROR}")
             endif()
 
-            # Print client logs (sent to stderr)
+            # Print client logs (sent to stderr), one message(STATUS) per line
             if(BUILD_NUM_ERROR)
-                message(STATUS "${BUILD_NUM_ERROR}")
+                string(REPLACE "\n" ";" _cbnc_log_lines "${BUILD_NUM_ERROR}")
+                foreach(_cbnc_line IN LISTS _cbnc_log_lines)
+                    if(NOT _cbnc_line STREQUAL "")
+                        message(STATUS "${_cbnc_line}")
+                    endif()
+                endforeach()
             endif()
 
             if(NOT BUILD_NUM_OUTPUT MATCHES "^[0-9]+$")
@@ -320,7 +325,7 @@ function(increment_build_number)
             endif()
         endif()
 
-        message(STATUS "Build number for '${ARG_PROJECT_KEY}': ${BUILD_NUM_OUTPUT}")
+        message(STATUS "[CBNC] Build number for '${ARG_PROJECT_KEY}': ${BUILD_NUM_OUTPUT}")
 
         # Set OUTPUT_VARIABLE in parent scope
         if(ARG_OUTPUT_VARIABLE)
@@ -345,7 +350,7 @@ function(increment_build_number)
 #define APP_VERSION_STRING \"${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.${BUILD_NUM_OUTPUT}\"
 ")
             file(WRITE "${ARG_VERSION_HEADER}" "${VERSION_HEADER_CONTENT}")
-            message(STATUS "Generated version header: ${ARG_VERSION_HEADER}")
+            message(STATUS "[CBNC] Generated version header: ${ARG_VERSION_HEADER}")
         endif()
 
         return()
@@ -376,7 +381,7 @@ if(NOT BUILD_NUM_OUTPUT MATCHES \"^[0-9]+$\")
     message(FATAL_ERROR \"Invalid content in counter file: '\${BUILD_NUM_OUTPUT}'\")
 endif()
 
-message(STATUS \"Build number for '${ARG_PROJECT_KEY}' (read-only): \${BUILD_NUM_OUTPUT}\")
+message(STATUS \"[CBNC] Build number for '${ARG_PROJECT_KEY}' (read-only): \${BUILD_NUM_OUTPUT}\")
 
 # Generate version header
 set(VERSION_HEADER_CONTENT \"#pragma once
@@ -392,7 +397,7 @@ set(VERSION_HEADER_CONTENT \"#pragma once
 \")
 
 file(WRITE \"${ARG_VERSION_HEADER}\" \"\${VERSION_HEADER_CONTENT}\")
-message(STATUS \"Generated version header: ${ARG_VERSION_HEADER}\")
+message(STATUS \"[CBNC] Generated version header: ${ARG_VERSION_HEADER}\")
 ")
     else()
         # Normal increment or FORCE_VERSION: call client.py
@@ -440,9 +445,14 @@ if(NOT BUILD_NUM_RESULT EQUAL 0)
     message(FATAL_ERROR \"Failed to get build number: \${BUILD_NUM_ERROR}\")
 endif()
 
-# Print logs
+# Print logs (one message per line for consistent -- prefix)
 if(BUILD_NUM_ERROR)
-    message(STATUS \"\${BUILD_NUM_ERROR}\")
+    string(REPLACE \"\\n\" \";\" _cbnc_log_lines \"\${BUILD_NUM_ERROR}\")
+    foreach(_cbnc_line IN LISTS _cbnc_log_lines)
+        if(NOT _cbnc_line STREQUAL \"\")
+            message(STATUS \"\${_cbnc_line}\")
+        endif()
+    endforeach()
 endif()
 
 # Validate output is a number
@@ -450,7 +460,7 @@ if(NOT BUILD_NUM_OUTPUT MATCHES \"^[0-9]+$\")
     message(FATAL_ERROR \"Invalid build number received: \${BUILD_NUM_OUTPUT}\")
 endif()
 
-message(STATUS \"Build number for '${ARG_PROJECT_KEY}': \${BUILD_NUM_OUTPUT}\")
+message(STATUS \"[CBNC] Build number for '${ARG_PROJECT_KEY}': \${BUILD_NUM_OUTPUT}\")
 
 # Generate version header
 set(VERSION_HEADER_CONTENT \"#pragma once
@@ -466,7 +476,7 @@ set(VERSION_HEADER_CONTENT \"#pragma once
 \")
 
 file(WRITE \"${ARG_VERSION_HEADER}\" \"\${VERSION_HEADER_CONTENT}\")
-message(STATUS \"Generated version header: ${ARG_VERSION_HEADER}\")
+message(STATUS \"[CBNC] Generated version header: ${ARG_VERSION_HEADER}\")
 ")
     endif()
 
@@ -479,6 +489,6 @@ message(STATUS \"Generated version header: ${ARG_VERSION_HEADER}\")
         VERBATIM
     )
 
-    message(STATUS "Build number will be incremented at build time for '${ARG_PROJECT_KEY}'")
-    message(STATUS "Version header: ${ARG_VERSION_HEADER}")
+    message(STATUS "[CBNC] Build number will be incremented at build time for '${ARG_PROJECT_KEY}'")
+    message(STATUS "[CBNC] Version header: ${ARG_VERSION_HEADER}")
 endfunction()
