@@ -16,8 +16,7 @@ Checklist of features and their test status. Update when adding new features or 
 | MODE=CONFIGURE increments (2 configures) | YES | test_cmake | `test_configure_mode_increments_on_reconfigure` |
 | MODE=CONFIGURE auto-reconfigure on build | YES | test_cmake | `test_configure_mode_auto_reconfigure_on_build` |
 | MODE=CONFIGURE + OUTPUT_VARIABLE before project() | YES | test_cmake | `test_configure_mode_output_variable_before_project` |
-| MODE=CONFIGURE + VERSION_HEADER after project() | YES | test_cmake | `test_configure_mode_version_header_after_project` |
-| MODE=CONFIGURE + VERSION_HEADER without project() | YES | test_cmake | `test_configure_mode_header_requires_project_version` |
+| MODE=CONFIGURE + auto-generated header after project() | YES | test_cmake | `test_configure_mode_version_header_after_project` |
 | MODE=CONFIGURE + NO_INCREMENT | YES | test_cmake | `test_no_increment_reads_current_value` |
 | MODE=CONFIGURE + FORCE_VERSION | YES | test_cmake | `test_configure_mode_force_version` |
 | NO_INCREMENT without counter file | YES | test_cmake | `test_no_increment_fails_without_prior_counter` |
@@ -37,7 +36,8 @@ Checklist of features and their test status. Update when adding new features or 
 | Auth: admin token | YES | test_cmake | `test_server_auth_admin_token` |
 | Auth: wrong token → build fails | YES | test_cmake | `test_server_auth_wrong_token_fails_build` |
 | Auth: wrong project → build fails | YES | test_cmake | `test_server_auth_wrong_project_fails_build` |
-| Custom TARGET name | NO | — | |
+| Manual include/dependency (legacy) | YES | test_cmake | `test_manual_include_and_dependency` |
+| Custom TARGET name | YES | test_cmake | `test_manual_include_and_dependency` |
 | QUIET flag suppresses output | NO | — | Used but not explicitly verified |
 | Custom LOCAL_FILE path | NO | — | Uses default in all tests |
 

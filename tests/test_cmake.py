@@ -43,7 +43,7 @@ def cmake_build(build_dir, timeout=60, env=None):
 
 
 def extract_build_number_from_header(text):
-    """Extract APP_VERSION_BUILD value from version.h content."""
+    """Extract APP_VERSION_BUILD value from cbnc-version.h content."""
     for line in text.splitlines():
         if "APP_VERSION_BUILD" in line and "#define" in line:
             return int(line.split()[-1])
@@ -74,7 +74,7 @@ def write_temp_cmakelists(tmp_path, content):
 
 @pytest.mark.cmake
 def test_example_simple_builds(tmp_path):
-    """Configure and build example-1-simple, verify version.h is generated."""
+    """Configure and build example-1-simple, verify cbnc-version.h is generated."""
     build_dir = tmp_path / "build"
     build_dir.mkdir()
 
@@ -86,9 +86,9 @@ def test_example_simple_builds(tmp_path):
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"CMake build failed:\n{result.stderr}"
 
-    # Verify version.h exists and has correct content
-    version_h = build_dir / "generated" / "version.h"
-    assert version_h.exists(), "version.h was not generated"
+    # Verify cbnc-version.h exists and has correct content
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists(), "cbnc-version.h was not generated"
 
     content = version_h.read_text()
     assert "APP_VERSION_MAJOR 2" in content
@@ -109,11 +109,11 @@ def test_build_number_increments(tmp_path):
 
     # First build
     cmake_build(build_dir)
-    content1 = (build_dir / "generated" / "version.h").read_text()
+    content1 = (build_dir / "cbnc-generated" / "cbnc-version.h").read_text()
 
     # Second build
     cmake_build(build_dir)
-    content2 = (build_dir / "generated" / "version.h").read_text()
+    content2 = (build_dir / "cbnc-generated" / "cbnc-version.h").read_text()
 
     build1 = extract_build_number_from_header(content1)
     build2 = extract_build_number_from_header(content2)
@@ -197,31 +197,6 @@ project(TestOutputVar LANGUAGES NONE)
     assert match, f"OUTPUT_VARIABLE not set. Output:\n{combined}"
     assert int(match.group(1)) > 0
 
-
-@pytest.mark.cmake
-def test_configure_mode_header_requires_project_version(tmp_path):
-    """VERSION_HEADER before project() should fail."""
-    source_dir = write_temp_cmakelists(tmp_path, f"""
-cmake_minimum_required(VERSION 3.20)
-list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
-include(CMakeBuildNumber)
-
-increment_build_number(
-    MODE CONFIGURE
-    PROJECT_KEY "test-header-fail"
-    VERSION_HEADER "${{CMAKE_BINARY_DIR}}/generated/version.h"
-    QUIET
-)
-
-project(TestHeaderFail LANGUAGES NONE)
-""")
-
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-
-    result = cmake_configure(source_dir, build_dir)
-    assert result.returncode != 0, "Expected configure to fail"
-    assert "PROJECT_VERSION" in result.stderr
 
 
 # ============================================================
@@ -390,7 +365,7 @@ def test_build_mode_no_auto_reconfigure(tmp_path):
     build_dir = tmp_path / "build"
     build_dir.mkdir()
 
-    version_h = build_dir / "generated" / "version.h"
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
 
     # Configure
     result = cmake_configure(EXAMPLE_SIMPLE, build_dir)
@@ -417,12 +392,12 @@ def test_build_mode_no_auto_reconfigure(tmp_path):
 
 
 # ============================================================
-# CONFIGURE mode + VERSION_HEADER (after project)
+# CONFIGURE mode + auto-generated header (after project)
 # ============================================================
 
 @pytest.mark.cmake
 def test_configure_mode_version_header_after_project(tmp_path):
-    """VERSION_HEADER in CONFIGURE mode works after project()."""
+    """CONFIGURE mode auto-generates cbnc-version.h after project()."""
     source_dir = write_temp_cmakelists(tmp_path, f"""
 cmake_minimum_required(VERSION 3.20)
 list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
@@ -440,7 +415,6 @@ project(TestHeaderOk VERSION 2.0.0.${{BUILD_NUM}} LANGUAGES NONE)
 increment_build_number(
     MODE CONFIGURE
     PROJECT_KEY "test-header-ok"
-    VERSION_HEADER "${{CMAKE_BINARY_DIR}}/generated/version.h"
     NO_INCREMENT
     QUIET
 )
@@ -452,8 +426,8 @@ increment_build_number(
     result = cmake_configure(source_dir, build_dir)
     assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
 
-    version_h = build_dir / "generated" / "version.h"
-    assert version_h.exists(), "version.h was not generated"
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists(), "cbnc-version.h was not generated"
 
     content = version_h.read_text()
     assert "APP_VERSION_MAJOR 2" in content
@@ -577,7 +551,6 @@ project(TestBuildNoIncr VERSION 1.0.0.0 LANGUAGES CXX)
 
 increment_build_number(
     PROJECT_KEY "test-build-no-incr"
-    VERSION_HEADER "${{CMAKE_BINARY_DIR}}/generated/version.h"
     FORCE_VERSION 7
     QUIET
 )
@@ -595,7 +568,7 @@ increment_build_number(
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"Build failed:\n{result.stderr}"
 
-    content1 = (build_dir / "generated" / "version.h").read_text()
+    content1 = (build_dir / "cbnc-generated" / "cbnc-version.h").read_text()
     build1 = extract_build_number_from_header(content1)
     assert build1 == 7
 
@@ -609,7 +582,6 @@ project(TestBuildNoIncr VERSION 1.0.0.0 LANGUAGES CXX)
 
 increment_build_number(
     PROJECT_KEY "test-build-no-incr"
-    VERSION_HEADER "${{CMAKE_BINARY_DIR}}/generated/version.h"
     NO_INCREMENT
     QUIET
 )
@@ -622,7 +594,7 @@ add_executable(test_app main.cpp)
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"Build with NO_INCREMENT failed:\n{result.stderr}"
 
-    content2 = (build_dir / "generated" / "version.h").read_text()
+    content2 = (build_dir / "cbnc-generated" / "cbnc-version.h").read_text()
     build2 = extract_build_number_from_header(content2)
     assert build2 == 7, f"NO_INCREMENT should keep value at 7, got {build2}"
 
@@ -652,16 +624,14 @@ include(CMakeBuildNumber)
 
 increment_build_number(
     PROJECT_KEY "test-fetch-build"
-    VERSION_HEADER "${{CMAKE_BINARY_DIR}}/generated/version.h"
     QUIET
 )
 
 add_executable(test_app main.cpp)
-target_include_directories(test_app PRIVATE ${{CMAKE_BINARY_DIR}}/generated)
-add_dependencies(test_app generate_version_test-fetch-build)
+target_link_libraries(test_app PRIVATE cbnc::version)
 """)
 
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -672,13 +642,13 @@ add_dependencies(test_app generate_version_test-fetch-build)
     # First build
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"First build failed:\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build1 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
     assert build1 > 0
 
     # Second build — must increment
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build2 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
     assert build2 == build1 + 1, f"FetchContent BUILD mode did not increment: {build1} -> {build2}"
 
 
@@ -738,6 +708,52 @@ target_compile_definitions(test_app PRIVATE APP_BUILD=${{PROJECT_VERSION_TWEAK}}
 
 
 # ============================================================
+# Manual include/dependency (legacy pattern, still supported)
+# ============================================================
+
+@pytest.mark.cmake
+def test_manual_include_and_dependency(tmp_path):
+    """Manual target_include_directories + add_dependencies still works without cbnc::version."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+project(TestManual VERSION 1.0.0.0 LANGUAGES CXX)
+
+increment_build_number(
+    PROJECT_KEY "test-manual"
+    TARGET "my_version_target"
+    QUIET
+)
+
+add_executable(test_app main.cpp)
+target_include_directories(test_app PRIVATE ${{CMAKE_BINARY_DIR}}/cbnc-generated)
+add_dependencies(test_app my_version_target)
+""")
+
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return APP_VERSION_BUILD; }\n')
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
+
+    # First build
+    result = cmake_build(build_dir)
+    assert result.returncode == 0, f"First build failed:\n{result.stderr}"
+    build1 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
+
+    # Second build — must increment
+    result = cmake_build(build_dir)
+    assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
+    build2 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
+
+    assert build2 == build1 + 1, f"Manual pattern did not increment: {build1} -> {build2}"
+
+
+# ============================================================
 # Server integration tests
 # ============================================================
 
@@ -758,13 +774,11 @@ project(TestServer VERSION 1.0.0.0 LANGUAGES CXX)
 
 increment_build_number(
     PROJECT_KEY "{project_key}"
-    VERSION_HEADER "${{CMAKE_BINARY_DIR}}/generated/version.h"
 {server_line}    QUIET
 )
 
 add_executable(test_app main.cpp)
-target_include_directories(test_app PRIVATE ${{CMAKE_BINARY_DIR}}/generated)
-add_dependencies(test_app generate_version_{project_key})
+target_link_libraries(test_app PRIVATE cbnc::version)
 """
 
 
@@ -800,7 +814,7 @@ def test_server_build_mode_cmake_params(tmp_path, running_server):
     """BUILD mode with SERVER_URL passed via CMake parameter."""
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists(server_url=running_server))
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -810,11 +824,11 @@ def test_server_build_mode_cmake_params(tmp_path, running_server):
 
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"First build failed:\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build1 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build2 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     assert build2 == build1 + 1, f"Server increment failed: {build1} -> {build2}"
 
@@ -824,7 +838,7 @@ def test_server_build_mode_env_vars(tmp_path, running_server):
     """BUILD mode with server URL via BUILD_SERVER_URL env var."""
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists())  # no server params in CMake
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -835,11 +849,11 @@ def test_server_build_mode_env_vars(tmp_path, running_server):
 
     result = cmake_build(build_dir, env=env)
     assert result.returncode == 0, f"First build failed:\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build1 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     result = cmake_build(build_dir, env=env)
     assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build2 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     assert build2 == build1 + 1, f"Server increment via env var failed: {build1} -> {build2}"
 
@@ -903,7 +917,7 @@ def test_server_auth_project_token(tmp_path, cmake_auth_server):
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists(
             server_url=url, server_token=token, project_key="cmake-test-project"))
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -913,11 +927,11 @@ def test_server_auth_project_token(tmp_path, cmake_auth_server):
 
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"First build failed:\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build1 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build2 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     assert build2 == build1 + 1, f"Auth project token increment failed: {build1} -> {build2}"
 
@@ -930,7 +944,7 @@ def test_server_auth_wildcard_token(tmp_path, cmake_auth_server):
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists(
             server_url=url, server_token=token, project_key="cmake-test-wildcard-proj"))
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -940,11 +954,11 @@ def test_server_auth_wildcard_token(tmp_path, cmake_auth_server):
 
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"First build failed:\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build1 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build2 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     assert build2 == build1 + 1, f"Auth wildcard token increment failed: {build1} -> {build2}"
 
@@ -957,7 +971,7 @@ def test_server_auth_admin_token(tmp_path, cmake_auth_server):
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists(
             server_url=url, server_token=token, project_key="any-project-name"))
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -967,11 +981,11 @@ def test_server_auth_admin_token(tmp_path, cmake_auth_server):
 
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"First build failed:\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build1 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     result = cmake_build(build_dir)
     assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build2 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     assert build2 == build1 + 1, f"Auth admin token increment failed: {build1} -> {build2}"
 
@@ -984,7 +998,7 @@ def test_server_auth_env_var_token(tmp_path, cmake_auth_server):
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists(
             server_url=url, project_key="cmake-test-project"))  # no token in CMake
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -995,11 +1009,11 @@ def test_server_auth_env_var_token(tmp_path, cmake_auth_server):
 
     result = cmake_build(build_dir, env=env)
     assert result.returncode == 0, f"First build failed:\n{result.stderr}"
-    build1 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build1 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     result = cmake_build(build_dir, env=env)
     assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
-    build2 = extract_build_number_from_header((build_dir / "generated" / "version.h").read_text())
+    build2 = extract_build_number_from_header((build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
 
     assert build2 == build1 + 1, f"Auth env var token increment failed: {build1} -> {build2}"
 
@@ -1013,7 +1027,7 @@ def test_server_auth_wrong_token_fails_build(tmp_path, cmake_auth_server):
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists(
             server_url=url, server_token="invalid-token", project_key="cmake-test-project"))
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -1032,7 +1046,7 @@ def test_no_increment_ignores_server_changes(tmp_path, running_server):
     """NO_INCREMENT reads local file even when server has a newer value.
 
     Simulates the documented pattern: increment before project(), then
-    NO_INCREMENT after project() to generate VERSION_HEADER. Between the
+    NO_INCREMENT after project() to generate cbnc-version.h. Between the
     two calls another client increments the same key on the server.
     NO_INCREMENT must return the original local value, not the server's.
     """
@@ -1060,7 +1074,6 @@ project(TestNoIncrServer VERSION 1.0.0.${{BUILD_NUM}} LANGUAGES NONE)
 increment_build_number(
     MODE CONFIGURE
     PROJECT_KEY "{project_key}"
-    VERSION_HEADER "${{CMAKE_BINARY_DIR}}/generated/version.h"
     NO_INCREMENT
     QUIET
 )
@@ -1077,8 +1090,8 @@ increment_build_number(
     assert match, f"STEP1 not found in output:\n{combined}"
     first_num = int(match.group(1))
 
-    version_h = build_dir / "generated" / "version.h"
-    assert version_h.exists(), "version.h was not generated"
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists(), "cbnc-version.h was not generated"
     header_num = extract_build_number_from_header(version_h.read_text())
     assert header_num == first_num, (
         f"NO_INCREMENT header ({header_num}) should match step 1 ({first_num})")
@@ -1120,7 +1133,7 @@ def test_server_auth_wrong_project_fails_build(tmp_path, cmake_auth_server):
     source_dir = write_temp_cmakelists(
         tmp_path, _build_mode_cmakelists(
             server_url=url, server_token=token, project_key="other-project"))
-    (source_dir / "main.cpp").write_text('#include "version.h"\nint main() { return 0; }\n')
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
 
     build_dir = tmp_path / "build"
     build_dir.mkdir()

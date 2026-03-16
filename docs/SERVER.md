@@ -15,7 +15,6 @@ https://cbnc-server.net
 ```cmake
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
     SERVER_URL "https://cbnc-server.net"
 )
 ```

@@ -15,7 +15,7 @@ increment_build_number(
 # Define project with build number as TWEAK component
 project(ConfigureExample VERSION 1.0.0.${BUILD_NUM} LANGUAGES CXX)
 
-# Use PROJECT_VERSION directly via compile definitions — no version.h needed
+# Use PROJECT_VERSION directly via compile definitions — no cbnc-version.h needed
 add_executable(configure_example main.cpp)
 target_compile_definitions(configure_example PRIVATE
     "APP_VERSION_STRING=\"${PROJECT_VERSION}\""

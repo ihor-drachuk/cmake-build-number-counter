@@ -31,7 +31,6 @@ export BUILD_SERVER_TOKEN=<token>
 # Via CMake parameter
 increment_build_number(
     PROJECT_KEY "my-app"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
     SERVER_URL "http://server:8080"
     SERVER_TOKEN "${BUILD_SERVER_TOKEN}"
 )

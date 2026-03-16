@@ -4,7 +4,7 @@ Each example is a self-contained CMake project in its own directory.
 
 ## 1. Simple (`1-simple/`)
 
-Basic usage with local counter and auto-generated `version.h`.
+Basic usage with local counter and auto-generated `cbnc-version.h`.
 
 ```bash
 cd 1-simple

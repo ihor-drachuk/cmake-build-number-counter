@@ -1,5 +1,5 @@
 #include <iostream>
-#include "version.h"
+#include "cbnc-version.h"
 
 int main() {
     std::cout << "========================================" << std::endl;

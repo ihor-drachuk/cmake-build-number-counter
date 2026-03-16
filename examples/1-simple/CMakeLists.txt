@@ -10,17 +10,13 @@ include(CMakeBuildNumber)
 # Generate version header with auto-incremented build number (at build time)
 increment_build_number(
     PROJECT_KEY "example-simple"
-    VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
 )
 
 # Create executable
 add_executable(simple_example main.cpp)
 
-# Include directory for generated header
-target_include_directories(simple_example PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-
-# Ensure version.h is generated before compiling (required for parallel builds like Ninja)
-add_dependencies(simple_example generate_version_example-simple)  # target name = generate_version_{PROJECT_KEY}
+# Link cbnc::version — provides include path and build dependency automatically
+target_link_libraries(simple_example PRIVATE cbnc::version)
 
 message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "Version: ${PROJECT_VERSION}")

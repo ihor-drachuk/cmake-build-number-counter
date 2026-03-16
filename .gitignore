@@ -36,7 +36,6 @@ out/
 .DS_Store
 
 # Generated files from examples
-examples/*/version.h
 examples/*/my_build_counter.txt
 examples/*/build_number.txt
 examples/*/*.txt.sync

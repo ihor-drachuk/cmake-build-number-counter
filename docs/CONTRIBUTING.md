@@ -8,7 +8,7 @@ Automatic build number incrementing system for CMake projects. Three components:
 
 - **Server** (`src/server.py`) — HTTP server managing per-project counters with atomic increments and persistent JSON storage
 - **Client** (`src/client.py`) — fetches next build number from server, falls back to local file counter when offline, syncs back on reconnect
-- **CMake module** (`src/CMakeBuildNumber.cmake`) — integrates the client into CMake builds. Two modes: BUILD (custom target at build time) and CONFIGURE (execute_process at configure time with auto-reconfigure)
+- **CMake module** (`src/CMakeBuildNumber.cmake`) — integrates the client into CMake builds. Two modes: BUILD (custom target at build time) and CONFIGURE (execute_process at configure time with auto-reconfigure). Creates `cbnc::version` INTERFACE library target for easy consumption via `target_link_libraries()`
 
 ## Architecture
 
@@ -24,7 +24,7 @@ Developer's machine              Build server
 │ time)            │           └──────────────┘
 │   └─ client.py   │
 │      ↓           │
-│ version.h        │
+│ cbnc-version.h   │
 │ build_number.txt │
 └──────────────────┘
 ```
@@ -33,7 +33,7 @@ Developer's machine              Build server
 1. `cmake --build` triggers the custom target
 2. Custom target runs `client.py` via Python
 3. Client tries server → falls back to local file → returns build number
-4. CMake script writes `version.h` with the number
+4. CMake script writes `cbnc-version.h` with the number
 
 **Force-set flow:** `POST /set` or `--force-version` / `--set-counter` bypasses increment and sets the counter to an exact value. Used for resets, migrations, and disaster recovery.
 

@@ -9,7 +9,7 @@ Every `cmake --build` increments the counter and generates a C++ version header 
 ## Features
 
 - Auto-increments build number on every build
-- Generates `version.h` with `MAJOR.MINOR.PATCH.BUILD` defines
+- Generates `cbnc-version.h` with `MAJOR.MINOR.PATCH.BUILD` defines
 - **Two modes:** build-time (default) or configure-time (for `project(VERSION ...)`)
 - Works locally out of the box — no server needed
 - Optional central server for team synchronization
@@ -51,19 +51,17 @@ include(CMakeBuildNumber)
 
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
 )
 # ---- End CBNC ----
 
 add_executable(myapp main.cpp)
-target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
-add_dependencies(myapp generate_version_myapp)  # target name = generate_version_{PROJECT_KEY}
+target_link_libraries(myapp PRIVATE cbnc::version)
 ```
 
 ### 2. Use in your code
 
 ```cpp
-#include "version.h"
+#include "cbnc-version.h"
 #include <iostream>
 
 int main() {
@@ -126,7 +124,7 @@ The build number auto-increments on every `cmake --build` (auto-reconfigure). Se
 
 Build number increments on every `cmake --build`:
 
-- **Build mode** (default) — custom target runs at build time, generates `version.h`
+- **Build mode** (default) — custom target runs at build time, generates `cbnc-version.h`
 - **Configure mode** — runs at configure time, returns value via `OUTPUT_VARIABLE` for use in `project(VERSION ...)`. Auto-triggers reconfigure on each build.
 
 Both modes support server sync:
@@ -141,7 +139,6 @@ For shared build numbers across machines, add `SERVER_URL` to your CMakeLists.tx
 ```cmake
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
     SERVER_URL "https://cbnc-server.net"      # ← public server, free, no auth
 )
 ```

@@ -9,7 +9,6 @@ Auto-increments a build number. Supports two modes: **BUILD** (default, runs at 
 ```cmake
 increment_build_number(
     PROJECT_KEY <key>               # Required: unique project identifier
-    [VERSION_HEADER <path>]         # Output header file path (required in BUILD mode)
     [MODE <BUILD|CONFIGURE>]        # Optional: BUILD (default) or CONFIGURE
     [OUTPUT_VARIABLE <var>]         # Optional: variable to receive build number (CONFIGURE mode)
     [SERVER_URL <url>]              # Optional: server URL (overrides BUILD_SERVER_URL env var)
@@ -23,30 +22,33 @@ increment_build_number(
 ```
 
 **Key points:**
-- In BUILD mode: call **after** `project()`, generates `VERSION_HEADER` at build time via custom target
-- In CONFIGURE mode: can be called **before** `project()` with `OUTPUT_VARIABLE` — useful for embedding the build number in `project(VERSION ...)`
+- Automatically generates `${CMAKE_BINARY_DIR}/cbnc-generated/cbnc-version.h` with version defines
+- Creates `cbnc::version` INTERFACE library — use `target_link_libraries(myapp PRIVATE cbnc::version)` to consume
+- In BUILD mode: call **after** `project()`, generates header at build time via custom target
+- In CONFIGURE mode: can be called **before** `project()` with `OUTPUT_VARIABLE`; header is auto-generated when `PROJECT_VERSION` is set
 - Build number increments on every `cmake --build` in both modes
 - `NO_INCREMENT` and `FORCE_VERSION` are mutually exclusive
 
 ### BUILD Mode (default)
 
-The original behavior. Creates a CMake custom target that runs on every `cmake --build`.
+Creates a CMake custom target that runs on every `cmake --build`.
 
 - Requires `project(VERSION ...)` to have been called
-- `VERSION_HEADER` is required
-- Generates a C++ header with `APP_VERSION_*` defines
+- Generates `cbnc-version.h` with `APP_VERSION_*` defines
+- Creates `cbnc::version` target with include directory and build dependency
 
 ```cmake
 project(MyApp VERSION 1.2.3.0)  # Last component = 0
 
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
 )
 
 add_executable(myapp main.cpp)
-add_dependencies(myapp generate_version_myapp)  # target name = generate_version_{PROJECT_KEY}
+target_link_libraries(myapp PRIVATE cbnc::version)
 ```
+
+Any target that links `cbnc::version` will find `cbnc-version.h` in its include path and will wait for the header to be generated before compiling.
 
 ### Configure Mode
 
@@ -68,15 +70,15 @@ project(MyApp VERSION 1.2.3.${BUILD_NUM} LANGUAGES CXX)
 ```
 
 **Constraints:**
-- `VERSION_HEADER` requires `PROJECT_VERSION` (call after `project()`)
 - `OUTPUT_VARIABLE` works before `project()`
+- `cbnc-version.h` is auto-generated when `PROJECT_VERSION` is set (after `project()`)
 - `TARGET` is ignored (no custom target created)
 
 ### NO_INCREMENT
 
 Reads the current counter value without incrementing or making any server calls. Requires the counter file to already exist (a prior normal increment must have run).
 
-**Primary use case:** generating a VERSION_HEADER after `project()` when the build number was obtained before `project()`:
+**Primary use case:** generating `cbnc-version.h` after `project()` when the build number was obtained before `project()`:
 
 ```cmake
 # Step 1: get build number before project()
@@ -92,16 +94,16 @@ project(MyApp VERSION 1.2.3.${BUILD_NUM} LANGUAGES CXX)
 increment_build_number(
     MODE CONFIGURE
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
     NO_INCREMENT
 )
+# cbnc-version.h is now generated, cbnc::version target is available
 ```
 
 Works in both BUILD and CONFIGURE modes. Mutually exclusive with `FORCE_VERSION`.
 
 ### Generated Header
 
-The function generates a header file (at the path specified by `VERSION_HEADER`) with:
+The function generates `${CMAKE_BINARY_DIR}/cbnc-generated/cbnc-version.h` with:
 
 ```cpp
 #pragma once
@@ -111,26 +113,6 @@ The function generates a header file (at the path specified by `VERSION_HEADER`)
 #define APP_VERSION_PATCH 3
 #define APP_VERSION_BUILD 42       // auto-incremented
 #define APP_VERSION_STRING "1.2.3.42"
-```
-
-### Multi-project Setup
-
-Each project gets its own independent counter:
-
-```cmake
-project(Frontend VERSION 3.2.1.0)
-increment_build_number(
-    PROJECT_KEY "frontend"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version_frontend.h"
-)
-add_dependencies(frontend_app generate_version_frontend)  # generate_version_{PROJECT_KEY}
-
-project(Backend VERSION 7.0.5.0)
-increment_build_number(
-    PROJECT_KEY "backend"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version_backend.h"
-)
-add_dependencies(backend_app generate_version_backend)  # generate_version_{PROJECT_KEY}
 ```
 
 ### Installation Without FetchContent
@@ -144,12 +126,10 @@ include(${CMAKE_SOURCE_DIR}/cmake/CMakeBuildNumber.cmake)
 
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
 )
 
 add_executable(myapp main.cpp)
-target_include_directories(myapp PRIVATE ${CMAKE_BINARY_DIR}/generated)
-add_dependencies(myapp generate_version_myapp)  # generate_version_{PROJECT_KEY}
+target_link_libraries(myapp PRIVATE cbnc::version)
 ```
 
 ## Client CLI
@@ -202,7 +182,6 @@ Custom:
 ```cmake
 increment_build_number(
     PROJECT_KEY "myapp"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
     LOCAL_FILE "${CMAKE_SOURCE_DIR}/build_counter.txt"
 )
 ```

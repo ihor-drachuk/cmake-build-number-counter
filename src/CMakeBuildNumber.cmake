@@ -13,13 +13,12 @@ endif()
 increment_build_number
 -----------------------
 
-Generates version header with auto-incremented build number.
+Generates ``cbnc-version.h`` header with auto-incremented build number.
 
 ::
 
   increment_build_number(
     PROJECT_KEY <key>
-    [VERSION_HEADER <path>]
     [MODE <BUILD|CONFIGURE>]
     [OUTPUT_VARIABLE <var>]
     [SERVER_URL <url>]
@@ -33,35 +32,38 @@ Generates version header with auto-incremented build number.
 
 Arguments:
   PROJECT_KEY - Unique identifier for the project (required)
-  VERSION_HEADER - Output header file path (required in BUILD mode, optional in CONFIGURE mode)
   MODE - BUILD (default) or CONFIGURE. BUILD creates a custom target; CONFIGURE runs at configure time
   OUTPUT_VARIABLE - Variable to receive build number (CONFIGURE mode only)
   SERVER_URL - URL of the build number server (optional, uses BUILD_SERVER_URL env var if not set)
   SERVER_TOKEN - API token for server authentication (optional, uses BUILD_SERVER_TOKEN env var if not set)
   LOCAL_FILE - Path to local counter file for offline fallback (optional, defaults to build dir)
-  TARGET - Target name to attach version generation (BUILD mode only, auto-generated if not specified)
+  TARGET - Custom target name (BUILD mode only, internal default: _cbnc_generate)
   FORCE_VERSION - Force-set build number to this value instead of incrementing (optional)
   NO_INCREMENT - Read current counter value without incrementing (mutually exclusive with FORCE_VERSION)
   QUIET - Suppress client log messages
 
 BUILD mode (default):
-  Generates header with APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH (from PROJECT_VERSION),
-  APP_VERSION_BUILD (auto-incremented), APP_VERSION_STRING (full version string).
-  Requires project(VERSION ...) to have been called.
+  Generates ``${CMAKE_BINARY_DIR}/cbnc-generated/cbnc-version.h`` with APP_VERSION_MAJOR, APP_VERSION_MINOR,
+  APP_VERSION_PATCH (from PROJECT_VERSION), APP_VERSION_BUILD (auto-incremented),
+  APP_VERSION_STRING (full version string). Requires project(VERSION ...) to have been called.
+  Creates ``cbnc::version`` INTERFACE library target that propagates include directory and
+  build dependency. Use ``target_link_libraries(myapp PRIVATE cbnc::version)`` to consume.
 
 CONFIGURE mode:
-  Runs increment at configure time. Can be called before project() if only OUTPUT_VARIABLE is used.
-  VERSION_HEADER requires project(VERSION ...) to have been called.
-  Automatically forces reconfigure on every build (via a stamp file that is deleted at build time),
-  unless NO_INCREMENT is used.
+  Runs increment at configure time. Can be called before project() with OUTPUT_VARIABLE.
+  When PROJECT_VERSION is set (after project()), automatically generates ``cbnc-version.h``
+  and creates ``cbnc::version`` INTERFACE library.
+  Automatically forces reconfigure on every build (via stamp file), unless NO_INCREMENT is used.
 
 Example (BUILD mode):
   project(MyApp VERSION 1.2.3.0)  # Last component should be 0
 
   increment_build_number(
     PROJECT_KEY "myproject"
-    VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/version.h"
   )
+
+  add_executable(myapp main.cpp)
+  target_link_libraries(myapp PRIVATE cbnc::version)
 
 Example (CONFIGURE mode):
   increment_build_number(
@@ -70,12 +72,18 @@ Example (CONFIGURE mode):
     OUTPUT_VARIABLE BUILD_NUM
   )
   project(MyApp VERSION 1.2.3.${BUILD_NUM})
+  increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "myproject"
+    NO_INCREMENT
+  )
+  # cbnc-version.h is now generated, cbnc::version target is available
 
 #]=======================================================================]
 function(increment_build_number)
     # Parse arguments
     set(options QUIET NO_INCREMENT)
-    set(oneValueArgs PROJECT_KEY VERSION_HEADER SERVER_URL SERVER_TOKEN LOCAL_FILE TARGET FORCE_VERSION MODE OUTPUT_VARIABLE)
+    set(oneValueArgs PROJECT_KEY SERVER_URL SERVER_TOKEN LOCAL_FILE TARGET FORCE_VERSION MODE OUTPUT_VARIABLE)
     set(multiValueArgs)
     cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -127,6 +135,9 @@ function(increment_build_number)
         set(ARG_LOCAL_FILE "${CMAKE_BINARY_DIR}/build_number.txt")
     endif()
 
+    # Hardcoded version header path
+    set(_CBNC_VERSION_HEADER "${CMAKE_BINARY_DIR}/cbnc-generated/cbnc-version.h")
+
     # Find the client script
     set(CLIENT_SCRIPT "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/client.py")
     if(NOT EXISTS "${CLIENT_SCRIPT}")
@@ -136,19 +147,14 @@ function(increment_build_number)
     # --- Mode-specific validation and warnings ---
 
     if(ARG_MODE STREQUAL "BUILD")
-        # BUILD mode: VERSION_HEADER is required
-        if(NOT ARG_VERSION_HEADER)
-            message(FATAL_ERROR "increment_build_number: VERSION_HEADER is required in BUILD mode")
-        endif()
-
         # Warn if OUTPUT_VARIABLE is used in BUILD mode (ignored)
         if(ARG_OUTPUT_VARIABLE)
             message(WARNING "increment_build_number: OUTPUT_VARIABLE is ignored in BUILD mode")
         endif()
 
-        # Default target name
+        # Default target name (internal; users should link cbnc::version instead)
         if(NOT ARG_TARGET)
-            set(ARG_TARGET "generate_version_${ARG_PROJECT_KEY}")
+            set(ARG_TARGET "_cbnc_generate")
         endif()
 
         # Require PROJECT_VERSION
@@ -157,21 +163,16 @@ function(increment_build_number)
         endif()
 
     elseif(ARG_MODE STREQUAL "CONFIGURE")
-        # CONFIGURE mode: at least one of VERSION_HEADER or OUTPUT_VARIABLE must be set
-        if(NOT ARG_VERSION_HEADER AND NOT ARG_OUTPUT_VARIABLE)
-            message(FATAL_ERROR "increment_build_number: CONFIGURE mode requires VERSION_HEADER and/or OUTPUT_VARIABLE")
+        # CONFIGURE mode: OUTPUT_VARIABLE is needed if PROJECT_VERSION is not set
+        if(NOT OUTPUT_VARIABLE AND NOT PROJECT_VERSION AND NOT ARG_OUTPUT_VARIABLE)
+            message(FATAL_ERROR
+                "increment_build_number: CONFIGURE mode requires OUTPUT_VARIABLE (before project())"
+                " or PROJECT_VERSION to be set (after project()).")
         endif()
 
         # Warn if TARGET is used in CONFIGURE mode (ignored)
         if(ARG_TARGET)
             message(WARNING "increment_build_number: TARGET is ignored in CONFIGURE mode (no custom target created)")
-        endif()
-
-        # VERSION_HEADER requires PROJECT_VERSION
-        if(ARG_VERSION_HEADER AND NOT PROJECT_VERSION)
-            message(FATAL_ERROR
-                "increment_build_number: VERSION_HEADER requires PROJECT_VERSION to be set."
-                " Call project(VERSION ...) first, or use only OUTPUT_VARIABLE.")
         endif()
     endif()
 
@@ -332,8 +333,8 @@ function(increment_build_number)
             set(${ARG_OUTPUT_VARIABLE} "${BUILD_NUM_OUTPUT}" PARENT_SCOPE)
         endif()
 
-        # Generate VERSION_HEADER if requested (requires PROJECT_VERSION, already validated above)
-        if(ARG_VERSION_HEADER)
+        # Generate version header if PROJECT_VERSION is available
+        if(PROJECT_VERSION)
             set(VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
             set(VERSION_MINOR ${PROJECT_VERSION_MINOR})
             set(VERSION_PATCH ${PROJECT_VERSION_PATCH})
@@ -349,8 +350,15 @@ function(increment_build_number)
 #define APP_VERSION_BUILD ${BUILD_NUM_OUTPUT}
 #define APP_VERSION_STRING \"${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.${BUILD_NUM_OUTPUT}\"
 ")
-            file(WRITE "${ARG_VERSION_HEADER}" "${VERSION_HEADER_CONTENT}")
-            message(STATUS "[CBNC] Generated version header: ${ARG_VERSION_HEADER}")
+            file(WRITE "${_CBNC_VERSION_HEADER}" "${VERSION_HEADER_CONTENT}")
+            message(STATUS "[CBNC] Generated version header: ${_CBNC_VERSION_HEADER}")
+
+            # Create INTERFACE library for easy consumption via target_link_libraries
+            if(NOT TARGET cbnc_version)
+                add_library(cbnc_version INTERFACE)
+                add_library(cbnc::version ALIAS cbnc_version)
+            endif()
+            target_include_directories(cbnc_version INTERFACE "${CMAKE_BINARY_DIR}/cbnc-generated")
         endif()
 
         return()
@@ -364,7 +372,7 @@ function(increment_build_number)
     set(VERSION_PATCH ${PROJECT_VERSION_PATCH})
 
     # Create a CMake script that will run at build time
-    set(GENERATOR_SCRIPT "${CMAKE_BINARY_DIR}/_generate_version_${ARG_PROJECT_KEY}.cmake")
+    set(GENERATOR_SCRIPT "${CMAKE_BINARY_DIR}/_cbnc_generate_${ARG_PROJECT_KEY}.cmake")
 
     if(ARG_NO_INCREMENT)
         # NO_INCREMENT in BUILD mode: read from file instead of calling client.py
@@ -396,8 +404,8 @@ set(VERSION_HEADER_CONTENT \"#pragma once
 #define APP_VERSION_STRING \\\"${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.\${BUILD_NUM_OUTPUT}\\\"
 \")
 
-file(WRITE \"${ARG_VERSION_HEADER}\" \"\${VERSION_HEADER_CONTENT}\")
-message(STATUS \"[CBNC] Generated version header: ${ARG_VERSION_HEADER}\")
+file(WRITE \"${_CBNC_VERSION_HEADER}\" \"\${VERSION_HEADER_CONTENT}\")
+message(STATUS \"[CBNC] Generated version header: ${_CBNC_VERSION_HEADER}\")
 ")
     else()
         # Normal increment or FORCE_VERSION: call client.py
@@ -475,8 +483,8 @@ set(VERSION_HEADER_CONTENT \"#pragma once
 #define APP_VERSION_STRING \\\"${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.\${BUILD_NUM_OUTPUT}\\\"
 \")
 
-file(WRITE \"${ARG_VERSION_HEADER}\" \"\${VERSION_HEADER_CONTENT}\")
-message(STATUS \"[CBNC] Generated version header: ${ARG_VERSION_HEADER}\")
+file(WRITE \"${_CBNC_VERSION_HEADER}\" \"\${VERSION_HEADER_CONTENT}\")
+message(STATUS \"[CBNC] Generated version header: ${_CBNC_VERSION_HEADER}\")
 ")
     endif()
 
@@ -484,11 +492,20 @@ message(STATUS \"[CBNC] Generated version header: ${ARG_VERSION_HEADER}\")
     add_custom_target(${ARG_TARGET}
         ALL
         COMMAND ${CMAKE_COMMAND} -P "${GENERATOR_SCRIPT}"
-        BYPRODUCTS "${ARG_VERSION_HEADER}"
+        BYPRODUCTS "${_CBNC_VERSION_HEADER}"
         COMMENT "Incrementing build number for ${ARG_PROJECT_KEY}"
         VERBATIM
     )
 
+    # Create INTERFACE library for easy consumption via target_link_libraries
+    if(NOT TARGET cbnc_version)
+        add_library(cbnc_version INTERFACE)
+        add_library(cbnc::version ALIAS cbnc_version)
+    endif()
+    target_include_directories(cbnc_version INTERFACE "${CMAKE_BINARY_DIR}/cbnc-generated")
+    add_dependencies(cbnc_version ${ARG_TARGET})
+
     message(STATUS "[CBNC] Build number will be incremented at build time for '${ARG_PROJECT_KEY}'")
-    message(STATUS "[CBNC] Version header: ${ARG_VERSION_HEADER}")
+    message(STATUS "[CBNC] Version header: ${_CBNC_VERSION_HEADER}")
+    message(STATUS "[CBNC] Link with: target_link_libraries(<target> PRIVATE cbnc::version)")
 endfunction()
