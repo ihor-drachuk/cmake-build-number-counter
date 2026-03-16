@@ -41,7 +41,7 @@ All of these consume `PROJECT_VERSION` at configure time. Switching to BUILD mod
 
 ## Decision
 
-**Reject the pre-increment mode. Use `NO_INCREMENT` via a project-level CMake option instead.**
+**Reject the pre-increment mode. Use `DISABLED` via a project-level CMake option instead.**
 
 The consumer project defines:
 
@@ -49,17 +49,19 @@ The consumer project defines:
 option(URB_NO_BUILD_INCREMENT "Skip build number increment (for IDE/debug)" OFF)
 ```
 
-And conditionally passes `NO_INCREMENT` to `increment_build_number()`. IDE presets set `URB_NO_BUILD_INCREMENT=ON`; CI does not.
+And conditionally passes `DISABLED` to `increment_build_number()`. IDE presets set `URB_NO_BUILD_INCREMENT=ON`; CI does not.
 
-With `NO_INCREMENT`:
-- No `client.py` call, no stamp file, no forced reconfigure
+With `DISABLED`:
+- No `client.py` call, no stamp file, no forced reconfigure (after initial bootstrap)
 - Last known build number is read from the local counter file
 - All downstream consumers (`project()`, `.rc`, `Defines.h`, `version-full.txt`) work unchanged
+- First build bootstraps normally (generates all needed files), subsequent builds skip
+
+Alternatively, `REUSE_COUNTER` can be used in the two-step CONFIGURE mode pattern to generate the header without double-incrementing.
 
 The trade-off — IDE builds don't contribute to the counter — is acceptable because tracking "effort" is a nice-to-have, not a requirement.
 
 ## Consequences
 
-- No changes to CBNC. The existing `NO_INCREMENT` flag already provides everything needed.
-- Consumer projects that want fast IDE iteration should use `NO_INCREMENT` via a project-level option.
+- Consumer projects that want fast IDE iteration should use `DISABLED` via a project-level option.
 - The "effort tracking" use case remains unsolved but is deprioritized as impractical within CMake's architecture.

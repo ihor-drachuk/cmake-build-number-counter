@@ -189,6 +189,21 @@ class TestForceSetBuildNumber:
         assert result == 0
         assert client.load_local_counter(tmp_local_file) == 0
 
+    def test_force_set_idempotent_counter_file(self, tmp_local_file):
+        """Repeated force-set with same value does not rewrite counter file (mtime preserved)."""
+        import time
+        client.force_set_build_number("test", 42, server_url=None, local_file=tmp_local_file)
+        mtime1 = os.path.getmtime(tmp_local_file)
+        time.sleep(0.1)
+        client.force_set_build_number("test", 42, server_url=None, local_file=tmp_local_file)
+        mtime2 = os.path.getmtime(tmp_local_file)
+        assert mtime1 == mtime2, f"Same value should not rewrite file: {mtime1} -> {mtime2}"
+        # Different value MUST rewrite
+        time.sleep(0.1)
+        client.force_set_build_number("test", 43, server_url=None, local_file=tmp_local_file)
+        mtime3 = os.path.getmtime(tmp_local_file)
+        assert mtime3 > mtime2, f"Different value should rewrite file: {mtime2} -> {mtime3}"
+
     def test_force_set_invalid_key_raises(self, tmp_local_file):
         """Force-set with invalid project key raises ValueError."""
         with pytest.raises(ValueError):

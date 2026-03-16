@@ -10,18 +10,32 @@ Checklist of features and their test status. Update when adding new features or 
 | MODE=BUILD basic | YES | test_cmake | `test_example_simple_builds` |
 | MODE=BUILD increments (2 builds) | YES | test_cmake | `test_build_number_increments` |
 | MODE=BUILD no auto-reconfigure | YES | test_cmake | `test_build_mode_no_auto_reconfigure` |
-| MODE=BUILD + NO_INCREMENT | YES | test_cmake | `test_build_mode_no_increment` |
+| MODE=BUILD + REUSE_COUNTER | YES | test_cmake | `test_build_mode_reuse_counter` |
 | MODE=BUILD + FORCE_VERSION | NO | — | Only tested in CONFIGURE mode |
 | MODE=CONFIGURE basic | YES | test_cmake | `test_configure_mode_builds` |
 | MODE=CONFIGURE increments (2 configures) | YES | test_cmake | `test_configure_mode_increments_on_reconfigure` |
 | MODE=CONFIGURE auto-reconfigure on build | YES | test_cmake | `test_configure_mode_auto_reconfigure_on_build` |
 | MODE=CONFIGURE + OUTPUT_VARIABLE before project() | YES | test_cmake | `test_configure_mode_output_variable_before_project` |
 | MODE=CONFIGURE + auto-generated header after project() | YES | test_cmake | `test_configure_mode_version_header_after_project` |
-| MODE=CONFIGURE + NO_INCREMENT | YES | test_cmake | `test_no_increment_reads_current_value` |
+| MODE=CONFIGURE + REUSE_COUNTER | YES | test_cmake | `test_reuse_counter_reads_current_value` |
 | MODE=CONFIGURE + FORCE_VERSION | YES | test_cmake | `test_configure_mode_force_version` |
-| NO_INCREMENT without counter file | YES | test_cmake | `test_no_increment_fails_without_prior_counter` |
-| NO_INCREMENT + FORCE_VERSION (mutual exclusion) | YES | test_cmake | `test_no_increment_with_force_version_fails` |
-| NO_INCREMENT ignores server changes | YES | test_cmake | `test_no_increment_ignores_server_changes` |
+| REUSE_COUNTER without counter file | YES | test_cmake | `test_reuse_counter_fails_without_prior_counter` |
+| REUSE_COUNTER + FORCE_VERSION (mutual exclusion) | YES | test_cmake | `test_reuse_counter_with_force_version_fails` |
+| REUSE_COUNTER ignores server changes | YES | test_cmake | `test_reuse_counter_ignores_server_changes` |
+| DISABLED bootstrap (CONFIGURE, first run) | YES | test_cmake | `test_disabled_bootstrap_first_run` |
+| DISABLED skips when files exist (CONFIGURE) | YES | test_cmake | `test_disabled_skips_when_files_exist` |
+| DISABLED regenerates header when missing | YES | test_cmake | `test_disabled_regenerates_header_when_missing` |
+| DISABLED no stamp file | YES | test_cmake | `test_disabled_no_stamp_file` |
+| DISABLED + FORCE_VERSION | YES | test_cmake | `test_disabled_with_force_version` |
+| DISABLED + REUSE_COUNTER header regen | YES | test_cmake | `test_disabled_reuse_counter_regenerates_header` |
+| DISABLED + REUSE_COUNTER + FORCE_VERSION (mutual exclusion) | YES | test_cmake | `test_disabled_reuse_counter_force_version_fatal_error` |
+| DISABLED skip log contains full command | YES | test_cmake | `test_disabled_skipped_log_contains_full_command` |
+| DISABLED sequence (DISABLED→normal→DISABLED) | YES | test_cmake | `test_disabled_sequence_disabled_normal_disabled` |
+| DISABLED bootstrap (BUILD mode) | YES | test_cmake | `test_build_mode_disabled_bootstrap` |
+| DISABLED skips (BUILD mode) | YES | test_cmake | `test_build_mode_disabled_skips` |
+| FORCE_VERSION idempotent header (CONFIGURE) | YES | test_cmake | `test_force_version_idempotent_header` |
+| FORCE_VERSION idempotent header (BUILD) | YES | test_cmake | `test_force_version_idempotent_header_build_mode` |
+| FORCE_VERSION idempotent counter file | YES | test_client | `test_force_set_idempotent_counter_file` |
 | Invalid MODE value | YES | test_cmake | `test_invalid_mode_fails` |
 | FetchContent (BUILD mode) | YES | test_cmake | `test_fetchcontent_build_mode` |
 | FetchContent (CONFIGURE mode) | YES | test_cmake | `test_fetchcontent_configure_mode` |

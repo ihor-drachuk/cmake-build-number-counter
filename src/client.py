@@ -284,16 +284,22 @@ def force_set_build_number(project_key, version, server_url=None, local_file=DEF
     """
     validate_project_key(project_key)
 
+    # Check if local file already has the desired value (idempotent skip)
+    current_local = load_local_counter(local_file)
+    local_already_set = (current_local == version)
+
     if server_url:
         result = set_on_server(server_url, project_key, version, server_token)
         if result is not None:
-            save_local_counter(local_file, result)
+            if not local_already_set:
+                save_local_counter(local_file, result)
             clear_local_sync_state(local_file)
             log_message(f"Force-set build number on server for '{project_key}': {result}")
             return result, False
 
     # Server unavailable or no URL -- set locally only
-    save_local_counter(local_file, version)
+    if not local_already_set:
+        save_local_counter(local_file, version)
     clear_local_sync_state(local_file)
     if server_url:
         log_message(f"WARNING: Force-set build number LOCALLY only for '{project_key}': {version}")

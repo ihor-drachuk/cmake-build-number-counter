@@ -200,12 +200,12 @@ project(TestOutputVar LANGUAGES NONE)
 
 
 # ============================================================
-# NO_INCREMENT tests
+# REUSE_COUNTER tests
 # ============================================================
 
 @pytest.mark.cmake
-def test_no_increment_reads_current_value(tmp_path):
-    """NO_INCREMENT reads current counter without incrementing across separate configures."""
+def test_reuse_counter_reads_current_value(tmp_path):
+    """REUSE_COUNTER reads current counter without incrementing across separate configures."""
     # CMakeLists that increments normally
     increment_cmake = f"""
 cmake_minimum_required(VERSION 3.20)
@@ -214,28 +214,28 @@ include(CMakeBuildNumber)
 
 increment_build_number(
     MODE CONFIGURE
-    PROJECT_KEY "test-no-incr"
+    PROJECT_KEY "test-reuse"
     OUTPUT_VARIABLE NUM
     QUIET
 )
 message(STATUS "VALUE=${{NUM}}")
-project(TestNoIncrement LANGUAGES NONE)
+project(TestReuseCounter LANGUAGES NONE)
 """
-    # CMakeLists that reads with NO_INCREMENT
-    no_incr_cmake = f"""
+    # CMakeLists that reads with REUSE_COUNTER
+    reuse_cmake = f"""
 cmake_minimum_required(VERSION 3.20)
 list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
 include(CMakeBuildNumber)
 
 increment_build_number(
     MODE CONFIGURE
-    PROJECT_KEY "test-no-incr"
+    PROJECT_KEY "test-reuse"
     OUTPUT_VARIABLE NUM
-    NO_INCREMENT
+    REUSE_COUNTER
     QUIET
 )
 message(STATUS "VALUE=${{NUM}}")
-project(TestNoIncrement LANGUAGES NONE)
+project(TestReuseCounter LANGUAGES NONE)
 """
 
     source_dir = tmp_path / "source"
@@ -258,13 +258,13 @@ project(TestNoIncrement LANGUAGES NONE)
     # 1st configure: normal increment → 1
     val1 = configure_and_get_value(increment_cmake)
 
-    # 2nd configure: NO_INCREMENT → still 1 (no change)
-    val2 = configure_and_get_value(no_incr_cmake)
-    assert val2 == val1, f"NO_INCREMENT should not change value: {val1} -> {val2}"
+    # 2nd configure: REUSE_COUNTER → still 1 (no change)
+    val2 = configure_and_get_value(reuse_cmake)
+    assert val2 == val1, f"REUSE_COUNTER should not change value: {val1} -> {val2}"
 
     # 3rd configure: normal increment → 2
     val3 = configure_and_get_value(increment_cmake)
-    assert val3 == val1 + 1, f"Increment after NO_INCREMENT should continue: {val1} -> {val3}"
+    assert val3 == val1 + 1, f"Increment after REUSE_COUNTER should continue: {val1} -> {val3}"
 
     # 4th configure: normal increment → 3
     val4 = configure_and_get_value(increment_cmake)
@@ -272,8 +272,8 @@ project(TestNoIncrement LANGUAGES NONE)
 
 
 @pytest.mark.cmake
-def test_no_increment_fails_without_prior_counter(tmp_path):
-    """NO_INCREMENT without existing counter file should fail."""
+def test_reuse_counter_fails_without_prior_counter(tmp_path):
+    """REUSE_COUNTER without existing counter file should fail."""
     source_dir = write_temp_cmakelists(tmp_path, f"""
 cmake_minimum_required(VERSION 3.20)
 list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
@@ -281,13 +281,13 @@ include(CMakeBuildNumber)
 
 increment_build_number(
     MODE CONFIGURE
-    PROJECT_KEY "test-no-incr-fail"
+    PROJECT_KEY "test-reuse-fail"
     OUTPUT_VARIABLE MY_NUM
-    NO_INCREMENT
+    REUSE_COUNTER
     QUIET
 )
 
-project(TestNoIncrFail LANGUAGES NONE)
+project(TestReuseFail LANGUAGES NONE)
 """)
 
     build_dir = tmp_path / "build"
@@ -295,12 +295,12 @@ project(TestNoIncrFail LANGUAGES NONE)
 
     result = cmake_configure(source_dir, build_dir)
     assert result.returncode != 0, "Expected configure to fail"
-    assert "NO_INCREMENT" in result.stderr
+    assert "REUSE_COUNTER" in result.stderr
 
 
 @pytest.mark.cmake
-def test_no_increment_with_force_version_fails(tmp_path):
-    """NO_INCREMENT + FORCE_VERSION should fail (mutually exclusive)."""
+def test_reuse_counter_with_force_version_fails(tmp_path):
+    """REUSE_COUNTER + FORCE_VERSION should fail (mutually exclusive)."""
     source_dir = write_temp_cmakelists(tmp_path, f"""
 cmake_minimum_required(VERSION 3.20)
 list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
@@ -310,7 +310,7 @@ increment_build_number(
     MODE CONFIGURE
     PROJECT_KEY "test-mutex"
     OUTPUT_VARIABLE MY_NUM
-    NO_INCREMENT
+    REUSE_COUNTER
     FORCE_VERSION 5
     QUIET
 )
@@ -323,7 +323,7 @@ project(TestMutex LANGUAGES NONE)
 
     result = cmake_configure(source_dir, build_dir)
     assert result.returncode != 0, "Expected configure to fail"
-    assert "mutually exclusive" in result.stderr.lower() or "NO_INCREMENT" in result.stderr
+    assert "mutually exclusive" in result.stderr.lower() or "REUSE_COUNTER" in result.stderr
 
 
 # ============================================================
@@ -415,7 +415,7 @@ project(TestHeaderOk VERSION 2.0.0.${{BUILD_NUM}} LANGUAGES NONE)
 increment_build_number(
     MODE CONFIGURE
     PROJECT_KEY "test-header-ok"
-    NO_INCREMENT
+    REUSE_COUNTER
     QUIET
 )
 """)
@@ -536,21 +536,21 @@ project(TestInvalid LANGUAGES NONE)
 
 
 # ============================================================
-# BUILD mode + NO_INCREMENT
+# BUILD mode + REUSE_COUNTER
 # ============================================================
 
 @pytest.mark.cmake
-def test_build_mode_no_increment(tmp_path):
-    """NO_INCREMENT in BUILD mode reads counter without incrementing."""
+def test_build_mode_reuse_counter(tmp_path):
+    """REUSE_COUNTER in BUILD mode reads counter without incrementing."""
     source_dir = write_temp_cmakelists(tmp_path, f"""
 cmake_minimum_required(VERSION 3.20)
 list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
 include(CMakeBuildNumber)
 
-project(TestBuildNoIncr VERSION 1.0.0.0 LANGUAGES CXX)
+project(TestBuildReuse VERSION 1.0.0.0 LANGUAGES CXX)
 
 increment_build_number(
-    PROJECT_KEY "test-build-no-incr"
+    PROJECT_KEY "test-build-reuse"
     FORCE_VERSION 7
     QUIET
 )
@@ -572,17 +572,17 @@ increment_build_number(
     build1 = extract_build_number_from_header(content1)
     assert build1 == 7
 
-    # Now switch to NO_INCREMENT — reconfigure with new CMakeLists
+    # Now switch to REUSE_COUNTER — reconfigure with new CMakeLists
     (source_dir / "CMakeLists.txt").write_text(f"""
 cmake_minimum_required(VERSION 3.20)
 list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
 include(CMakeBuildNumber)
 
-project(TestBuildNoIncr VERSION 1.0.0.0 LANGUAGES CXX)
+project(TestBuildReuse VERSION 1.0.0.0 LANGUAGES CXX)
 
 increment_build_number(
-    PROJECT_KEY "test-build-no-incr"
-    NO_INCREMENT
+    PROJECT_KEY "test-build-reuse"
+    REUSE_COUNTER
     QUIET
 )
 
@@ -592,11 +592,934 @@ add_executable(test_app main.cpp)
     result = cmake_configure(source_dir, build_dir)
     assert result.returncode == 0, f"Reconfigure failed:\n{result.stderr}"
     result = cmake_build(build_dir)
-    assert result.returncode == 0, f"Build with NO_INCREMENT failed:\n{result.stderr}"
+    assert result.returncode == 0, f"Build with REUSE_COUNTER failed:\n{result.stderr}"
 
     content2 = (build_dir / "cbnc-generated" / "cbnc-version.h").read_text()
     build2 = extract_build_number_from_header(content2)
-    assert build2 == 7, f"NO_INCREMENT should keep value at 7, got {build2}"
+    assert build2 == 7, f"REUSE_COUNTER should keep value at 7, got {build2}"
+
+
+# ============================================================
+# DISABLED tests (CONFIGURE mode)
+# ============================================================
+
+@pytest.mark.cmake
+def test_disabled_bootstrap_first_run(tmp_path):
+    """DISABLED with no existing files bootstraps: full increment on first run."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-boot"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    QUIET
+)
+message(STATUS "VALUE=${{NUM}}")
+project(TestDisabledBoot LANGUAGES NONE)
+""")
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
+
+    combined = result.stdout + result.stderr
+    match = re.search(r"VALUE=(\d+)", combined)
+    assert match, f"VALUE not found in output:\n{combined}"
+    assert int(match.group(1)) > 0
+
+    # Counter file should exist after bootstrap
+    assert (build_dir / "build_number.txt").exists()
+    # But no stamp file (DISABLED suppresses auto-reconfigure)
+    import glob as g
+    stamps = list(build_dir.glob("_build_number_reconfigure_stamp_*"))
+    assert len(stamps) == 0, f"DISABLED should not create stamp file, found: {stamps}"
+
+
+@pytest.mark.cmake
+def test_disabled_skips_when_files_exist(tmp_path):
+    """DISABLED skips when counter + header already exist."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # First: normal increment to create files
+    normal_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-skip"
+    OUTPUT_VARIABLE NUM
+    QUIET
+)
+message(STATUS "VALUE=${{NUM}}")
+project(TestDisabledSkip VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-skip"
+    REUSE_COUNTER
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(normal_cmake)
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Initial configure failed:\n{result.stderr}"
+    match = re.search(r"VALUE=(\d+)", result.stdout + result.stderr)
+    val1 = int(match.group(1))
+
+    # Now switch to DISABLED
+    disabled_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-skip"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    QUIET
+)
+message(STATUS "VALUE=${{NUM}}")
+project(TestDisabledSkip VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-skip"
+    REUSE_COUNTER
+    DISABLED
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(disabled_cmake)
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"DISABLED configure failed:\n{result.stderr}"
+
+    combined = result.stdout + result.stderr
+    assert "Skipped" in combined, f"Expected 'Skipped' in output:\n{combined}"
+
+    match = re.search(r"VALUE=(\d+)", combined)
+    val2 = int(match.group(1))
+    assert val2 == val1, f"DISABLED should not increment: {val1} -> {val2}"
+
+
+@pytest.mark.cmake
+def test_disabled_regenerates_header_when_missing(tmp_path):
+    """DISABLED regenerates header from counter when header is missing but counter exists."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # First: normal increment to create counter file
+    normal_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-regen"
+    OUTPUT_VARIABLE NUM
+    QUIET
+)
+project(TestDisabledRegen VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-regen"
+    REUSE_COUNTER
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(normal_cmake)
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Initial configure failed:\n{result.stderr}"
+    counter_val = int((build_dir / "build_number.txt").read_text().strip())
+
+    # Delete header but keep counter
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists()
+    version_h.unlink()
+
+    # Now configure with DISABLED — should regenerate header
+    disabled_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-regen"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    QUIET
+)
+project(TestDisabledRegen VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-regen"
+    REUSE_COUNTER
+    DISABLED
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(disabled_cmake)
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"DISABLED regen configure failed:\n{result.stderr}"
+
+    # Header should be regenerated
+    assert version_h.exists(), "Header should be regenerated"
+    build_num = extract_build_number_from_header(version_h.read_text())
+    assert build_num == counter_val, f"Regenerated header should match counter: {counter_val}, got {build_num}"
+
+
+@pytest.mark.cmake
+def test_disabled_no_stamp_file(tmp_path):
+    """DISABLED should not create stamp file (no auto-reconfigure)."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-stamp"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    QUIET
+)
+message(STATUS "VALUE=${{NUM}}")
+project(TestDisabledStamp LANGUAGES NONE)
+""")
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
+
+    stamps = list(build_dir.glob("_build_number_reconfigure_stamp_*"))
+    assert len(stamps) == 0, f"DISABLED should not create stamp file, found: {stamps}"
+
+
+@pytest.mark.cmake
+def test_disabled_with_force_version(tmp_path):
+    """DISABLED + FORCE_VERSION: DISABLED is ignored, force-set works."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-force"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    FORCE_VERSION 50
+    QUIET
+)
+message(STATUS "VALUE=${{NUM}}")
+project(TestDisabledForce LANGUAGES NONE)
+""")
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
+
+    match = re.search(r"VALUE=(\d+)", result.stdout + result.stderr)
+    assert match, "VALUE not found"
+    assert int(match.group(1)) == 50
+
+
+@pytest.mark.cmake
+def test_disabled_sequence_disabled_normal_disabled(tmp_path):
+    """Edge case: DISABLED → normal → DISABLED across multiple configures."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    disabled_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-seq"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    QUIET
+)
+message(STATUS "VALUE=${{NUM}}")
+project(TestDisabledSeq LANGUAGES NONE)
+"""
+    normal_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-seq"
+    OUTPUT_VARIABLE NUM
+    QUIET
+)
+message(STATUS "VALUE=${{NUM}}")
+project(TestDisabledSeq LANGUAGES NONE)
+"""
+
+    def configure_and_get_value(cmake_content):
+        (source_dir / "CMakeLists.txt").write_text(cmake_content)
+        cache = build_dir / "CMakeCache.txt"
+        if cache.exists():
+            cache.unlink()
+        result = cmake_configure(source_dir, build_dir)
+        assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
+        match = re.search(r"VALUE=(\d+)", result.stdout + result.stderr)
+        assert match, f"VALUE not found in output"
+        return int(match.group(1))
+
+    # 1st: DISABLED (bootstrap) → should increment
+    val1 = configure_and_get_value(disabled_cmake)
+    assert val1 > 0
+
+    # 2nd: normal → should increment
+    val2 = configure_and_get_value(normal_cmake)
+    assert val2 == val1 + 1, f"Normal after DISABLED should increment: {val1} -> {val2}"
+
+    # 3rd: DISABLED → should skip (files exist), same value
+    val3 = configure_and_get_value(disabled_cmake)
+    assert val3 == val2, f"DISABLED should not increment: {val2} -> {val3}"
+
+    # 4th: normal → should increment from val2
+    val4 = configure_and_get_value(normal_cmake)
+    assert val4 == val2 + 1, f"Normal after DISABLED should increment: {val2} -> {val4}"
+
+    # 5th: DISABLED → skip again
+    val5 = configure_and_get_value(disabled_cmake)
+    assert val5 == val4, f"DISABLED should not increment: {val4} -> {val5}"
+
+
+# ============================================================
+# DISABLED tests (BUILD mode)
+# ============================================================
+
+@pytest.mark.cmake
+def test_build_mode_disabled_bootstrap(tmp_path):
+    """BUILD mode DISABLED: first build bootstraps (creates counter + header)."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+project(TestBuildDisabledBoot VERSION 1.0.0.0 LANGUAGES CXX)
+
+increment_build_number(
+    PROJECT_KEY "test-build-disabled-boot"
+    DISABLED
+    QUIET
+)
+
+add_executable(test_app main.cpp)
+target_link_libraries(test_app PRIVATE cbnc::version)
+""")
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
+
+    result = cmake_build(build_dir)
+    assert result.returncode == 0, f"Build failed:\n{result.stderr}"
+
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists(), "Header should be generated on bootstrap"
+    build1 = extract_build_number_from_header(version_h.read_text())
+    assert build1 > 0
+
+
+@pytest.mark.cmake
+def test_build_mode_disabled_skips(tmp_path):
+    """BUILD mode DISABLED: skips after initial files exist."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # First: normal build to create files
+    (source_dir / "CMakeLists.txt").write_text(f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+project(TestBuildDisabledSkip VERSION 1.0.0.0 LANGUAGES CXX)
+
+increment_build_number(
+    PROJECT_KEY "test-build-disabled-skip"
+    QUIET
+)
+
+add_executable(test_app main.cpp)
+target_link_libraries(test_app PRIVATE cbnc::version)
+""")
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
+    result = cmake_build(build_dir)
+    assert result.returncode == 0, f"First build failed:\n{result.stderr}"
+    build1 = extract_build_number_from_header(
+        (build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
+
+    # Second: switch to DISABLED
+    (source_dir / "CMakeLists.txt").write_text(f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+project(TestBuildDisabledSkip VERSION 1.0.0.0 LANGUAGES CXX)
+
+increment_build_number(
+    PROJECT_KEY "test-build-disabled-skip"
+    DISABLED
+    QUIET
+)
+
+add_executable(test_app main.cpp)
+target_link_libraries(test_app PRIVATE cbnc::version)
+""")
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Reconfigure failed:\n{result.stderr}"
+    result = cmake_build(build_dir)
+    assert result.returncode == 0, f"DISABLED build failed:\n{result.stderr}"
+
+    build2 = extract_build_number_from_header(
+        (build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
+    assert build2 == build1, f"DISABLED should not increment: {build1} -> {build2}"
+
+    # Third build with DISABLED — should still skip
+    result = cmake_build(build_dir)
+    assert result.returncode == 0, f"Second DISABLED build failed:\n{result.stderr}"
+    build3 = extract_build_number_from_header(
+        (build_dir / "cbnc-generated" / "cbnc-version.h").read_text())
+    assert build3 == build1, f"DISABLED should still not increment: {build1} -> {build3}"
+
+
+# ============================================================
+# FORCE_VERSION idempotency tests
+# ============================================================
+
+@pytest.mark.cmake
+def test_force_version_idempotent_header(tmp_path):
+    """FORCE_VERSION with same value does not rewrite header (mtime preserved)."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-force-idemp"
+    OUTPUT_VARIABLE NUM
+    FORCE_VERSION 42
+    QUIET
+)
+project(TestForceIdemp VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-force-idemp"
+    REUSE_COUNTER
+    QUIET
+)
+""")
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # First configure — creates header
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"First configure failed:\n{result.stderr}"
+
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists()
+    mtime1 = version_h.stat().st_mtime
+
+    import time
+    time.sleep(0.1)  # ensure mtime would differ if rewritten
+
+    # Second configure — same FORCE_VERSION, header should not be rewritten
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Second configure failed:\n{result.stderr}"
+
+    mtime2 = version_h.stat().st_mtime
+    assert mtime1 == mtime2, f"Header mtime changed (rewritten): {mtime1} -> {mtime2}"
+
+
+# ============================================================
+# DISABLED + REUSE_COUNTER: header regeneration
+# ============================================================
+
+@pytest.mark.cmake
+def test_disabled_reuse_counter_regenerates_header(tmp_path):
+    """DISABLED + REUSE_COUNTER regenerates header when counter exists but header is missing."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # First: normal increment to create counter + header
+    normal_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-reuse-regen"
+    OUTPUT_VARIABLE NUM
+    QUIET
+)
+project(TestDisReuseRegen VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-reuse-regen"
+    REUSE_COUNTER
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(normal_cmake)
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Initial configure failed:\n{result.stderr}"
+
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists()
+    counter_val = int((build_dir / "build_number.txt").read_text().strip())
+
+    # Delete header, keep counter
+    version_h.unlink()
+
+    # Configure with DISABLED + REUSE_COUNTER — should regenerate header
+    disabled_reuse_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-reuse-regen"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    REUSE_COUNTER
+    QUIET
+)
+project(TestDisReuseRegen VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-reuse-regen"
+    REUSE_COUNTER
+    DISABLED
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(disabled_reuse_cmake)
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"DISABLED+REUSE_COUNTER configure failed:\n{result.stderr}"
+
+    assert version_h.exists(), "Header should be regenerated by DISABLED+REUSE_COUNTER"
+    build_num = extract_build_number_from_header(version_h.read_text())
+    assert build_num == counter_val, f"Regenerated header should match counter: {counter_val}, got {build_num}"
+
+
+# ============================================================
+# DISABLED: skipped log contains full command
+# ============================================================
+
+@pytest.mark.cmake
+def test_disabled_skipped_log_contains_full_command(tmp_path):
+    """DISABLED skip log contains full python client.py command for manual copy."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # First: normal increment to create counter + header
+    normal_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-log"
+    OUTPUT_VARIABLE NUM
+    QUIET
+)
+project(TestDisabledLog VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-log"
+    REUSE_COUNTER
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(normal_cmake)
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Initial configure failed:\n{result.stderr}"
+
+    # Now configure with DISABLED — should skip and log full command
+    disabled_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-disabled-log"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+)
+project(TestDisabledLog VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+"""
+    (source_dir / "CMakeLists.txt").write_text(disabled_cmake)
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"DISABLED configure failed:\n{result.stderr}"
+
+    combined = result.stdout + result.stderr
+    assert "Skipped" in combined, f"Expected 'Skipped' in output:\n{combined}"
+    assert "client.py" in combined, f"Skipped log should contain 'client.py':\n{combined}"
+    assert "--project-key" in combined, f"Skipped log should contain '--project-key':\n{combined}"
+
+
+# ============================================================
+# FORCE_VERSION idempotent header (BUILD mode)
+# ============================================================
+
+@pytest.mark.cmake
+def test_force_version_idempotent_header_build_mode(tmp_path):
+    """BUILD mode: repeated FORCE_VERSION with same value does not rewrite header."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+project(TestForceIdempBuild VERSION 1.0.0.0 LANGUAGES CXX)
+
+increment_build_number(
+    PROJECT_KEY "test-force-idemp-build"
+    FORCE_VERSION 42
+    QUIET
+)
+
+add_executable(test_app main.cpp)
+target_link_libraries(test_app PRIVATE cbnc::version)
+""")
+    (source_dir / "main.cpp").write_text('#include "cbnc-version.h"\nint main() { return 0; }\n')
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Configure failed:\n{result.stderr}"
+
+    # First build — creates header
+    result = cmake_build(build_dir)
+    assert result.returncode == 0, f"First build failed:\n{result.stderr}"
+
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists()
+    build_num = extract_build_number_from_header(version_h.read_text())
+    assert build_num == 42
+    mtime1 = version_h.stat().st_mtime
+
+    import time
+    time.sleep(0.1)
+
+    # Second build — same FORCE_VERSION, header should not be rewritten
+    result = cmake_build(build_dir)
+    assert result.returncode == 0, f"Second build failed:\n{result.stderr}"
+
+    mtime2 = version_h.stat().st_mtime
+    assert mtime1 == mtime2, f"Header mtime changed (rewritten) in BUILD mode: {mtime1} -> {mtime2}"
+
+
+# ============================================================
+# Triple combination: DISABLED + REUSE_COUNTER + FORCE_VERSION
+# ============================================================
+
+@pytest.mark.cmake
+def test_disabled_reuse_counter_force_version_fatal_error(tmp_path):
+    """DISABLED + REUSE_COUNTER + FORCE_VERSION → FATAL_ERROR (mutual exclusion)."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-triple-mutex"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    REUSE_COUNTER
+    FORCE_VERSION 10
+    QUIET
+)
+
+project(TestTripleMutex LANGUAGES NONE)
+""")
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode != 0, "Expected configure to fail with triple combination"
+    assert "mutually exclusive" in result.stderr.lower() or "REUSE_COUNTER" in result.stderr
+
+
+# ============================================================
+# DISABLED pre-project (single call, no REUSE_COUNTER)
+# ============================================================
+
+@pytest.mark.cmake
+def test_disabled_pre_project_skips_after_bootstrap(tmp_path):
+    """DISABLED before project() skips on 2nd configure (counter file only, no header)."""
+    source_dir = write_temp_cmakelists(tmp_path, f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-preproj"
+    OUTPUT_VARIABLE BUILD_NUM
+    DISABLED
+    QUIET
+)
+message(STATUS "VALUE=${{BUILD_NUM}}")
+project(TestDisPreProj LANGUAGES NONE)
+""")
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # 1st configure: bootstrap (no files) → full increment
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Bootstrap failed:\n{result.stderr}"
+    combined = result.stdout + result.stderr
+    match = re.search(r"VALUE=(\d+)", combined)
+    assert match, f"VALUE not found:\n{combined}"
+    val1 = int(match.group(1))
+    assert val1 > 0
+
+    # Counter file should exist
+    assert (build_dir / "build_number.txt").exists()
+    # Header should NOT exist (before project(), no PROJECT_VERSION)
+    assert not (build_dir / "cbnc-generated" / "cbnc-version.h").exists()
+
+    # 2nd configure: DISABLED should skip (counter file exists, pre-project)
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Second configure failed:\n{result.stderr}"
+
+    combined = result.stdout + result.stderr
+    assert "Skipped" in combined, f"Expected 'Skipped' in output:\n{combined}"
+    assert "client.py" in combined, f"Expected skipped command with 'client.py':\n{combined}"
+
+    match = re.search(r"VALUE=(\d+)", combined)
+    assert match, f"VALUE not found on second configure:\n{combined}"
+    val2 = int(match.group(1))
+    assert val2 == val1, f"DISABLED should not increment: {val1} -> {val2}"
+
+    # 3rd configure: still skipping
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Third configure failed:\n{result.stderr}"
+    combined = result.stdout + result.stderr
+    assert "Skipped" in combined
+
+
+@pytest.mark.cmake
+def test_disabled_pre_project_with_reuse_counter_skips(tmp_path):
+    """DISABLED + REUSE_COUNTER before project() skips when counter exists."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # Step 1: normal increment to create counter
+    normal_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-reuse-preproj"
+    OUTPUT_VARIABLE BUILD_NUM
+    QUIET
+)
+message(STATUS "VALUE=${{BUILD_NUM}}")
+project(TestDisReusePreProj LANGUAGES NONE)
+"""
+    (source_dir / "CMakeLists.txt").write_text(normal_cmake)
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Initial configure failed:\n{result.stderr}"
+    val1 = int(re.search(r"VALUE=(\d+)", result.stdout + result.stderr).group(1))
+
+    # Step 2: switch to DISABLED + REUSE_COUNTER
+    disabled_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-reuse-preproj"
+    OUTPUT_VARIABLE BUILD_NUM
+    DISABLED
+    REUSE_COUNTER
+    QUIET
+)
+message(STATUS "VALUE=${{BUILD_NUM}}")
+project(TestDisReusePreProj LANGUAGES NONE)
+"""
+    (source_dir / "CMakeLists.txt").write_text(disabled_cmake)
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"DISABLED+REUSE configure failed:\n{result.stderr}"
+
+    combined = result.stdout + result.stderr
+    assert "Skipped" in combined, f"Expected skip:\n{combined}"
+    val2 = int(re.search(r"VALUE=(\d+)", combined).group(1))
+    assert val2 == val1, f"Should not increment: {val1} -> {val2}"
+
+
+@pytest.mark.cmake
+def test_disabled_post_project_still_checks_header(tmp_path):
+    """DISABLED after project() requires header to skip; regenerates if missing."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    # Step 1: normal configure to create counter + header
+    normal_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-postproj"
+    OUTPUT_VARIABLE NUM
+    QUIET
+)
+project(TestDisPostProj VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-postproj"
+    REUSE_COUNTER
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(normal_cmake)
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Initial configure failed:\n{result.stderr}"
+
+    version_h = build_dir / "cbnc-generated" / "cbnc-version.h"
+    assert version_h.exists()
+    counter_val = int((build_dir / "build_number.txt").read_text().strip())
+
+    # Delete header, keep counter
+    version_h.unlink()
+
+    # Step 2: DISABLED after project() — should regenerate header (not skip)
+    disabled_cmake = f"""
+cmake_minimum_required(VERSION 3.20)
+list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
+include(CMakeBuildNumber)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-postproj"
+    OUTPUT_VARIABLE NUM
+    DISABLED
+    QUIET
+)
+project(TestDisPostProj VERSION 1.0.0.${{NUM}} LANGUAGES NONE)
+
+increment_build_number(
+    MODE CONFIGURE
+    PROJECT_KEY "test-dis-postproj"
+    REUSE_COUNTER
+    DISABLED
+    QUIET
+)
+"""
+    (source_dir / "CMakeLists.txt").write_text(disabled_cmake)
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"DISABLED configure failed:\n{result.stderr}"
+
+    combined = result.stdout + result.stderr
+    # First call (before project) should skip (counter exists, pre-project)
+    # Second call (after project, REUSE_COUNTER) should regenerate header
+    assert version_h.exists(), "Header should be regenerated by post-project REUSE_COUNTER"
+    build_num = extract_build_number_from_header(version_h.read_text())
+    assert build_num == counter_val, f"Header should match counter: {counter_val}, got {build_num}"
+
+    # Step 3: configure again — both files exist, should skip everywhere
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+    result = cmake_configure(source_dir, build_dir)
+    assert result.returncode == 0, f"Third configure failed:\n{result.stderr}"
+    combined = result.stdout + result.stderr
+    assert "Skipped" in combined, f"Expected skip on third configure:\n{combined}"
 
 
 # ============================================================
@@ -1042,17 +1965,17 @@ def test_server_auth_wrong_token_fails_build(tmp_path, cmake_auth_server):
 
 
 @pytest.mark.cmake
-def test_no_increment_ignores_server_changes(tmp_path, running_server):
-    """NO_INCREMENT reads local file even when server has a newer value.
+def test_reuse_counter_ignores_server_changes(tmp_path, running_server):
+    """REUSE_COUNTER reads local file even when server has a newer value.
 
     Simulates the documented pattern: increment before project(), then
-    NO_INCREMENT after project() to generate cbnc-version.h. Between the
+    REUSE_COUNTER after project() to generate cbnc-version.h. Between the
     two calls another client increments the same key on the server.
-    NO_INCREMENT must return the original local value, not the server's.
+    REUSE_COUNTER must return the original local value, not the server's.
     """
-    project_key = "test-no-incr-server"
+    project_key = "test-reuse-server"
 
-    # CMakeLists: increment + NO_INCREMENT in one configure (the documented pattern)
+    # CMakeLists: increment + REUSE_COUNTER in one configure (the documented pattern)
     source_dir = write_temp_cmakelists(tmp_path, f"""
 cmake_minimum_required(VERSION 3.20)
 list(APPEND CMAKE_MODULE_PATH "{SRC_DIR.as_posix()}")
@@ -1070,11 +1993,11 @@ increment_build_number(
 message(STATUS "STEP1=${{BUILD_NUM}}")
 project(TestNoIncrServer VERSION 1.0.0.${{BUILD_NUM}} LANGUAGES NONE)
 
-# Step 2: NO_INCREMENT — must reuse local value, no server call
+# Step 2: REUSE_COUNTER — must reuse local value, no server call
 increment_build_number(
     MODE CONFIGURE
     PROJECT_KEY "{project_key}"
-    NO_INCREMENT
+    REUSE_COUNTER
     QUIET
 )
 """)
@@ -1094,7 +2017,7 @@ increment_build_number(
     assert version_h.exists(), "cbnc-version.h was not generated"
     header_num = extract_build_number_from_header(version_h.read_text())
     assert header_num == first_num, (
-        f"NO_INCREMENT header ({header_num}) should match step 1 ({first_num})")
+        f"REUSE_COUNTER header ({header_num}) should match step 1 ({first_num})")
 
     # Now simulate another client incrementing on the server
     import client as client_module
@@ -1121,7 +2044,7 @@ increment_build_number(
 
     header_num2 = extract_build_number_from_header(version_h.read_text())
     assert header_num2 == second_num, (
-        f"NO_INCREMENT header ({header_num2}) must match step 1 ({second_num}), "
+        f"REUSE_COUNTER header ({header_num2}) must match step 1 ({second_num}), "
         f"not the intermediate server value ({first_num + 1})")
 
 
