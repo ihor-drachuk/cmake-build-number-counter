@@ -10,7 +10,7 @@
 
 - Verify server is running: `curl http://your-server:8080/`
 - Check firewall rules and `BUILD_SERVER_URL` value
-- The client falls back to local counter automatically on transient network errors
+- The client falls back to local counter automatically on transient network errors and prints a warning to stderr (visible even with `--quiet` / `QUIET`)
 
 ## Build fails with "Server rejected request"
 

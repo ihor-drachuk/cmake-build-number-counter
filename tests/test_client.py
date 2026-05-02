@@ -241,15 +241,20 @@ class TestLogMessages:
 
     @pytest.fixture(autouse=True)
     def capture_logs(self):
-        """Capture log_message() calls into a list."""
+        """Capture log_message() and log_warning() calls into separate lists."""
         self.logs = []
-        original = client.log_message
+        self.warnings = []
+        original_msg = client.log_message
+        original_warn = client.log_warning
         client.log_message = lambda msg, **kw: self.logs.append(f"[CBNC] {msg}")
+        client.log_warning = lambda msg, **kw: self.warnings.append(f"[CBNC] {msg}")
         yield
-        client.log_message = original
+        client.log_message = original_msg
+        client.log_warning = original_warn
 
     def _log_text(self):
-        return "\n".join(self.logs)
+        # Combined view for legacy assertions that don't care about the channel.
+        return "\n".join(self.logs + self.warnings)
 
     def test_no_warning_without_server(self, tmp_local_file):
         """No WARNING when server is not configured (purely local)."""
@@ -299,6 +304,78 @@ class TestLogMessages:
         client.force_set_build_number("test", 5, server_url="http://localhost:1",
                                       local_file=tmp_local_file)
         assert "WARNING" in self._log_text()
+
+    # --- Channel separation: warnings bypass --quiet, info does not ---
+
+    def _simulate_quiet(self):
+        """Mimic main()'s --quiet behavior: silence log_message; leave log_warning intact."""
+        client.log_message = lambda *a, **kw: None
+
+    def test_warning_appears_under_quiet_on_transient_5xx(self, tmp_local_file):
+        """HTTP 5xx with --quiet: warning channel still receives cause + consequence."""
+        self._simulate_quiet()
+        error = _make_http_error(502, {"error": "Bad Gateway"})
+        with patch('client.urllib.request.urlopen', side_effect=error):
+            client.get_build_number("proj", server_url="http://fake:8080",
+                                    local_file=tmp_local_file)
+        joined = "\n".join(self.warnings)
+        assert "Server error" in joined
+        assert "Bad Gateway" in joined
+        assert "WARNING: Using LOCAL build number" in joined
+
+    def test_warning_appears_under_quiet_on_url_error(self, tmp_local_file):
+        """URLError with --quiet: warning channel still receives cause + consequence."""
+        self._simulate_quiet()
+        with patch('client.urllib.request.urlopen',
+                   side_effect=urllib.error.URLError("connection refused")):
+            client.get_build_number("proj", server_url="http://fake:8080",
+                                    local_file=tmp_local_file)
+        joined = "\n".join(self.warnings)
+        assert "Server unavailable" in joined
+        assert "connection refused" in joined
+        assert "WARNING: Using LOCAL build number" in joined
+
+    def test_no_warning_under_quiet_when_no_server_url(self, tmp_local_file):
+        """No URL configured: purely local mode produces no warnings, even without --quiet."""
+        client.get_build_number("proj", server_url=None, local_file=tmp_local_file)
+        assert self.warnings == []
+
+    def test_info_suppressed_under_quiet_on_server_success(self, tmp_local_file):
+        """Server success path: only info is logged; --quiet would suppress all output."""
+        self._simulate_quiet()
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"build_number": 7}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with patch('client.urllib.request.urlopen', return_value=mock_response):
+            client.get_build_number("proj", server_url="http://fake:8080",
+                                    local_file=tmp_local_file)
+        # log_message was silenced by _simulate_quiet, log_warning was never called.
+        assert self.warnings == []
+        assert self.logs == []  # message channel was patched to no-op
+
+    def test_force_set_warning_appears_under_quiet_on_fallback(self, tmp_local_file):
+        """Force-set fallback with --quiet: warning channel still receives the WARNING line."""
+        self._simulate_quiet()
+        with patch('client.urllib.request.urlopen',
+                   side_effect=urllib.error.URLError("nope")):
+            client.force_set_build_number("proj", 9,
+                                          server_url="http://fake:8080",
+                                          local_file=tmp_local_file)
+        joined = "\n".join(self.warnings)
+        assert "Server unavailable" in joined
+        assert "WARNING: Force-set build number LOCALLY only" in joined
+
+    def test_sync_followup_stays_info_not_warning(self, tmp_local_file):
+        """Sync follow-up message ('will sync') goes to info channel, not warning."""
+        with patch('client.urllib.request.urlopen',
+                   side_effect=urllib.error.URLError("nope")):
+            client.get_build_number("proj", server_url="http://fake:8080",
+                                    local_file=tmp_local_file)
+        info_joined = "\n".join(self.logs)
+        warn_joined = "\n".join(self.warnings)
+        assert "will sync to server" in info_joined
+        assert "will sync to server" not in warn_joined
 
 
 def _make_http_error(code, body_dict):

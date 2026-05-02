@@ -103,6 +103,23 @@ class TestClientLocalFallback:
         assert data['build_number'] == 1
         assert data['project_key'] == 'test'
 
+    def test_quiet_does_not_suppress_fallback_warning(self, tmp_path):
+        """--quiet + unreachable server: warning appears on stderr, fallback succeeds."""
+        local_file = str(tmp_path / "counter.txt")
+        # Port 1 is reserved/unbound — connection refused without DNS lookup.
+        cmd = [sys.executable, CLIENT_PY, '--project-key', 'qtest',
+               '--local-file', local_file,
+               '--server-url', 'http://127.0.0.1:1',
+               '--quiet']
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0
+        assert result.stdout.strip() == "1"
+        # Warning channel must bypass --quiet: cause + consequence both visible.
+        assert "Server unavailable" in result.stderr
+        assert "WARNING" in result.stderr
+        # Sync follow-up is info — it must stay suppressed by --quiet.
+        assert "will sync to server" not in result.stderr
+
 
 class TestClientServerIntegration:
     def test_client_server_roundtrip(self, tmp_path):

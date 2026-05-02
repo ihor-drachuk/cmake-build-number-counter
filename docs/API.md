@@ -198,7 +198,7 @@ Output formats: `plain` (default), `cmake`, `json`.
 - **0** — success (build number printed to stdout)
 - **1** — error: invalid project key, invalid `--force-version`, or **server rejection** (HTTP 401, 403, 429)
 
-Server rejections (authentication failure, forbidden project, rate-limit ban) cause exit code 1 and a message to stderr. The `--quiet` flag does **not** suppress rejection errors. Transient failures (network errors, timeouts, HTTP 500) still fall back to the local counter silently.
+Server rejections (authentication failure, forbidden project, rate-limit ban) cause exit code 1 and a message to stderr. Transient failures (network errors, timeouts, HTTP 5xx) print a warning to stderr and fall back to the local counter. The `--quiet` flag suppresses only routine info logs; warnings (server unreachable / fallback used) and rejection errors always appear on stderr.
 
 ## Configuration Priority
 

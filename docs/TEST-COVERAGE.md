@@ -52,7 +52,7 @@ Checklist of features and their test status. Update when adding new features or 
 | Auth: wrong project → build fails | YES | test_cmake | `test_server_auth_wrong_project_fails_build` |
 | Manual include/dependency (legacy) | YES | test_cmake | `test_manual_include_and_dependency` |
 | Custom TARGET name | YES | test_cmake | `test_manual_include_and_dependency` |
-| QUIET flag suppresses output | NO | — | Used but not explicitly verified |
+| QUIET flag suppresses info, warnings still print | YES | test_client::TestLogMessages, test_integration | Channel separation: `log_message` (info) suppressed, `log_warning` always prints |
 | Custom LOCAL_FILE path | NO | — | Uses default in all tests |
 
 ## Client (`src/client.py`)

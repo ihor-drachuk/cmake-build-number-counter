@@ -34,7 +34,12 @@ DEFAULT_LOCAL_FILE = "build_number.txt"
 
 
 def log_message(message, file=sys.stderr):
-    """Print log message to stderr."""
+    """Info log — suppressed by --quiet."""
+    print(f"[CBNC] {message}", file=file)
+
+
+def log_warning(message, file=sys.stderr):
+    """Warning log — always printed, even with --quiet."""
     print(f"[CBNC] {message}", file=file)
 
 
@@ -47,7 +52,7 @@ def load_local_counter(local_file):
             content = f.read().strip()
             return int(content) if content else 0
     except (ValueError, IOError) as e:
-        log_message(f"Warning: Error reading local counter: {e}")
+        log_warning(f"Warning: Error reading local counter: {e}")
         return 0
 
 
@@ -137,13 +142,13 @@ def increment_on_server(server_url, project_key, local_version=None, server_toke
             error_msg = str(e)
         if e.code in (401, 403, 429):
             raise ServerRejectedError(e.code, error_msg)
-        log_message(f"Server error: {error_msg}")
+        log_warning(f"Server error: {error_msg}")
         return None
     except urllib.error.URLError as e:
-        log_message(f"Server unavailable: {e.reason}")
+        log_warning(f"Server unavailable: {e.reason}")
         return None
     except Exception as e:
-        log_message(f"Request failed: {e}")
+        log_warning(f"Request failed: {e}")
         return None
 
 
@@ -188,13 +193,13 @@ def set_on_server(server_url, project_key, version, server_token=None):
             error_msg = str(e)
         if e.code in (401, 403, 429):
             raise ServerRejectedError(e.code, error_msg)
-        log_message(f"Server error: {error_msg}")
+        log_warning(f"Server error: {error_msg}")
         return None
     except urllib.error.URLError as e:
-        log_message(f"Server unavailable: {e.reason}")
+        log_warning(f"Server unavailable: {e.reason}")
         return None
     except Exception as e:
-        log_message(f"Request failed: {e}")
+        log_warning(f"Request failed: {e}")
         return None
 
 
@@ -214,7 +219,7 @@ def increment_locally(local_file, project_key):
     save_local_counter(local_file, new_number)
     save_local_sync_state(local_file, new_number)
 
-    log_message(f"WARNING: Using LOCAL build number for '{project_key}': {new_number}")
+    log_warning(f"WARNING: Using LOCAL build number for '{project_key}': {new_number}")
     log_message(f"Local counter will sync to server on next successful connection")
 
     return new_number
@@ -302,7 +307,7 @@ def force_set_build_number(project_key, version, server_url=None, local_file=DEF
         save_local_counter(local_file, version)
     clear_local_sync_state(local_file)
     if server_url:
-        log_message(f"WARNING: Force-set build number LOCALLY only for '{project_key}': {version}")
+        log_warning(f"WARNING: Force-set build number LOCALLY only for '{project_key}': {version}")
         log_message(f"Server counter was NOT updated. Sync may override this value later.")
     else:
         log_message(f"Force-set build number for '{project_key}': {version}")
