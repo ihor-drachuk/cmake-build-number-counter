@@ -341,7 +341,8 @@ class TestTokensCache:
         assert "k" in result
         assert server_module._tokens_cache_mtime > 0
 
-    def test_cache_returns_same_object_on_unchanged_mtime(self, tmp_path, monkeypatch):
+    def test_cache_skips_disk_io_on_unchanged_mtime(self, tmp_path, monkeypatch):
+        """Repeat calls do not re-read tokens.json while mtime is unchanged."""
         import server as server_module
         server_module.init_data_dir(str(tmp_path / "data"))
         self._write_tokens(server_module, {"tokens": {"k": {"name": "t"}}})
@@ -356,10 +357,25 @@ class TestTokensCache:
         monkeypatch.setattr(server_module, 'load_json_file', counting)
 
         first = server_module.load_tokens()
+        assert "k" in first
         for _ in range(10):
             again = server_module.load_tokens()
-            assert again is first  # same dict object — cache hit
+            assert again == first  # same content
         assert len(calls) == 1, f"expected 1 disk read, got {len(calls)}"
+
+    def test_cache_returns_defensive_copy(self, tmp_path):
+        """Mutating the returned dict must not affect the cache."""
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "data"))
+        self._write_tokens(server_module, {"tokens": {"k": {"name": "t"}}})
+
+        first = server_module.load_tokens()
+        first["evil"] = {"name": "injected"}
+        first.pop("k", None)
+
+        second = server_module.load_tokens()
+        assert "k" in second, "cache was poisoned by caller mutation"
+        assert "evil" not in second
 
     # --- error handling ---
 

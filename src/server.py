@@ -202,11 +202,19 @@ def load_json_file(filename, default):
 
 
 def save_json_file(filename, data):
-    """Save JSON file atomically."""
+    """Save JSON file atomically and durably.
+
+    Atomic replace alone is not enough: it updates the directory entry
+    but the file's data blocks may still be in the OS page cache. After
+    a crash (host kernel panic, watchdog os._exit followed by container
+    SIGKILL of any in-flight writer) the dirent can point at zero-length
+    data. Fsync the data before swapping the dirent.
+    """
     temp_file = filename + ".tmp"
     with open(temp_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    # Atomic replace
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(temp_file, filename)
 
 
@@ -230,9 +238,10 @@ def is_project_limit_reached():
 def load_tokens():
     """Load tokens with mtime-based caching. Thread-safe.
 
-    Returns the in-memory tokens dict (token_value -> metadata) without
-    touching the disk when tokens.json mtime has not changed since the
-    last successful load.
+    Returns a shallow COPY of the in-memory tokens dict. Returning a
+    copy (instead of the live cache reference) means any caller mutation
+    cannot poison the cache for other threads, and a concurrent cache
+    refresh cannot make a reader's iteration crash.
     """
     global _tokens_cache, _tokens_cache_mtime
 
@@ -241,20 +250,20 @@ def load_tokens():
             if _tokens_cache_mtime != -1.0:
                 _tokens_cache = {}
                 _tokens_cache_mtime = -1.0
-            return _tokens_cache
+            return dict(_tokens_cache)
 
     try:
         mtime = os.path.getmtime(TOKENS_FILE)
     except OSError:
         with _tokens_cache_lock:
-            return _tokens_cache
+            return dict(_tokens_cache)
 
     with _tokens_cache_lock:
         if mtime != _tokens_cache_mtime:
             data = load_json_file(TOKENS_FILE, {})
             _tokens_cache = data.get("tokens", {})
             _tokens_cache_mtime = mtime
-        return _tokens_cache
+        return dict(_tokens_cache)
 
 
 def authenticate_request(handler, project_key):
@@ -1229,9 +1238,13 @@ def main():
         _start_cleanup_timer()
 
     if args.watchdog:
+        # Use the actual bound port, not args.port. With --port 0 the
+        # kernel chose a free port and args.port is still 0, so probing
+        # 127.0.0.1:0 would fail forever and kill the server in 30s.
+        bound_port = server.server_address[1]
         watchdog_thread = threading.Thread(
             target=_watchdog_loop,
-            args=(args.port, args.watchdog_interval,
+            args=(bound_port, args.watchdog_interval,
                   args.watchdog_failures, args.watchdog_timeout),
             name='watchdog',
             daemon=True,
