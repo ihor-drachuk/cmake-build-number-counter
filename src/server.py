@@ -14,8 +14,10 @@ import secrets
 import sys
 import time
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Optional
 from urllib.parse import urlparse
 from validation import validate_project_key
 
@@ -307,60 +309,86 @@ def validate_version(value):
     return True, None
 
 
-def increment_build_number(project_key, local_version=None):
-    """
-    Increment build number for a project.
+@dataclass
+class _IncrementResult:
+    status: str  # 'ok' | 'unapproved' | 'limit_reached'
+    build_number: Optional[int] = None
 
-    Args:
-        project_key: Unique identifier for the project
-        local_version: Optional local version to sync (use if greater than server's)
+
+@dataclass
+class _SetResult:
+    status: str  # 'ok' | 'unapproved'
+    build_number: Optional[int] = None
+
+
+def increment_build_number(project_key, local_version=None):
+    """Atomically check approval/limit and increment counter.
+
+    All approval/limit checks and the increment happen within a single
+    file_lock critical section to avoid TOCTOU under multi-threading.
 
     Returns:
-        New build number or None on error
+        _IncrementResult with status:
+            'ok'             -> build_number is the new value
+            'unapproved'     -> project is unknown and accept_unknown is False
+            'limit_reached'  -> new project would exceed max_projects
     """
     with file_lock:
         build_numbers = load_json_file(BUILD_NUMBERS_FILE, {})
+        is_new = project_key not in build_numbers
+
+        if is_new and not accept_unknown:
+            return _IncrementResult(status='unapproved')
+
+        if is_new and max_projects > 0 and len(build_numbers) >= max_projects:
+            return _IncrementResult(status='limit_reached')
 
         current = build_numbers.get(project_key, 0)
-
-        # If local version is provided and greater, use it
         if local_version is not None and local_version > current:
             current = local_version
             print(f"Updated {project_key} from local version: {local_version}")
 
-        # Increment
         new_number = current + 1
         build_numbers[project_key] = new_number
-
-        # Save atomically
         save_json_file(BUILD_NUMBERS_FILE, build_numbers)
 
         print(f"Incremented {project_key}: {current} -> {new_number}")
-        return new_number
+        return _IncrementResult(status='ok', build_number=new_number)
 
 
-def set_build_number(project_key, version):
-    """Set build number for a project to an exact value (no increment).
+def set_build_number(project_key, version, force_unapproved=False):
+    """Atomically check approval and set counter to an exact value.
 
     Args:
-        project_key: Unique identifier for the project
-        version: The exact value to set
+        project_key: Project identifier (already validated by caller).
+        version: Non-negative integer to set the counter to.
+        force_unapproved: If True, bypass the approval check. Used by the
+            CLI --set-counter command, which is a local admin operation
+            that must work regardless of accept_unknown.
 
     Returns:
-        The set value
+        _SetResult with status:
+            'ok'         -> build_number is the value that was written
+            'unapproved' -> project is unknown and (accept_unknown is False
+                            and force_unapproved is False)
 
     Raises:
-        ValueError: If version is invalid
+        ValueError: If version is invalid (negative, non-int, or bool).
     """
     if not isinstance(version, int) or isinstance(version, bool) or version < 0:
         raise ValueError(f"version must be a non-negative integer, got {version!r}")
 
     with file_lock:
         build_numbers = load_json_file(BUILD_NUMBERS_FILE, {})
+        is_new = project_key not in build_numbers
+
+        if is_new and not accept_unknown and not force_unapproved:
+            return _SetResult(status='unapproved')
+
         build_numbers[project_key] = version
         save_json_file(BUILD_NUMBERS_FILE, build_numbers)
         print(f"Set {project_key} to {version}")
-        return version
+        return _SetResult(status='ok', build_number=version)
 
 
 class BuildNumberHandler(BaseHTTPRequestHandler):
@@ -455,16 +483,14 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
                     self.send_json_response(401, {'error': auth_error})
                     return
 
-                is_new_project = not is_project_approved(project_key)
+                result = increment_build_number(project_key, local_version)
 
-                if is_new_project and not accept_unknown:
+                if result.status == 'unapproved':
                     self.send_json_response(403, {
                         'error': f'Project key "{project_key}" is not approved. Add it to build_numbers.json or restart server with --accept-unknown',
                         'project_key': project_key
                     })
-                    return
-
-                if is_new_project and is_project_limit_reached():
+                elif result.status == 'limit_reached':
                     self.send_json_response(507, {
                         'error': 'Maximum project limit reached',
                         'detail': f'Server is configured to allow at most {max_projects} projects. '
@@ -473,19 +499,14 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
                         'max_projects': max_projects,
                         'project_key': project_key,
                     })
-                    return
-
-                # Increment and return
-                build_number = increment_build_number(project_key, local_version)
-
-                if build_number is not None:
+                elif result.status == 'ok':
                     self.send_json_response(200, {
-                        'build_number': build_number,
+                        'build_number': result.build_number,
                         'project_key': project_key
                     })
                 else:
                     self.send_json_response(500, {
-                        'error': 'Failed to increment build number'
+                        'error': f'Unexpected increment status: {result.status}'
                     })
 
             except json.JSONDecodeError:
@@ -530,18 +551,22 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
                     self.send_json_response(401, {'error': auth_error})
                     return
 
-                if not is_project_approved(project_key) and not accept_unknown:
+                result = set_build_number(project_key, version)
+
+                if result.status == 'unapproved':
                     self.send_json_response(403, {
                         'error': f'Project key "{project_key}" is not approved',
                         'project_key': project_key
                     })
-                    return
-
-                result = set_build_number(project_key, version)
-                self.send_json_response(200, {
-                    'build_number': result,
-                    'project_key': project_key
-                })
+                elif result.status == 'ok':
+                    self.send_json_response(200, {
+                        'build_number': result.build_number,
+                        'project_key': project_key
+                    })
+                else:
+                    self.send_json_response(500, {
+                        'error': f'Unexpected set status: {result.status}'
+                    })
 
             except json.JSONDecodeError:
                 self.send_json_response(400, {
@@ -806,7 +831,7 @@ def main():
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
-        set_build_number(args.project_key, args.set_version)
+        set_build_number(args.project_key, args.set_version, force_unapproved=True)
         print(f"Set {args.project_key} = {args.set_version}")
         return
 
