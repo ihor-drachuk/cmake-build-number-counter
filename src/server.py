@@ -10,7 +10,9 @@ import fnmatch
 import json
 import argparse
 import os
+import queue
 import secrets
+import socket
 import sys
 import time
 import threading
@@ -22,14 +24,122 @@ from urllib.parse import urlparse
 from validation import validate_project_key
 
 
-class QuietHTTPServer(HTTPServer):
-    """HTTPServer that silently handles client disconnects."""
+DEFAULT_MAX_WORKERS = 64
+
+# Network errors we silence in handle_error: client disconnects and idle
+# timeouts are normal traffic, not server bugs. Real exceptions still
+# surface through the standard handle_error path.
+_BENIGN_NETWORK_ERRORS = (ConnectionError, socket.timeout, TimeoutError)
+
+
+class PooledHTTPServer(HTTPServer):
+    """HTTP server with a fixed worker thread pool and bounded queue.
+
+    Architecture: serve_forever() runs in the main thread and only does
+    accept() + push the socket into a bounded Queue. N daemon worker
+    threads pull from the Queue and run finish_request().
+
+    Hard cap on concurrent connections: max_workers in flight + max_workers
+    queued. Excess clients receive 503 Service Unavailable immediately
+    (best-effort raw write, then close). Workers are daemon threads — they
+    die with the process; we do not join them on shutdown to keep teardown
+    fast and to avoid hanging on a stuck request.
+    """
+
+    def __init__(self, server_address, RequestHandlerClass,
+                 bind_and_activate=True, max_workers=None):
+        super().__init__(server_address, RequestHandlerClass, bind_and_activate)
+        self._max_workers = max_workers or DEFAULT_MAX_WORKERS
+        self._work_queue = queue.Queue(maxsize=self._max_workers)
+        self._shutdown_event = threading.Event()
+        self._workers = []
+        for i in range(self._max_workers):
+            t = threading.Thread(
+                target=self._worker_loop,
+                name=f'cbnc-worker-{i}',
+                daemon=True,
+            )
+            t.start()
+            self._workers.append(t)
+
+    def process_request(self, request, client_address):
+        """Hand the socket off to a worker, or refuse with 503."""
+        try:
+            self._work_queue.put_nowait((request, client_address))
+        except queue.Full:
+            self._refuse_overloaded(request)
 
     def handle_error(self, request, client_address):
-        if issubclass(sys.exc_info()[0], ConnectionError):
+        exc_type = sys.exc_info()[0]
+        if exc_type is not None and issubclass(exc_type, _BENIGN_NETWORK_ERRORS):
+            return
+        super().handle_error(request, client_address)
+
+    def server_close(self):
+        """Close listening socket, signal workers, drain pending sockets."""
+        super().server_close()
+        self._shutdown_event.set()
+        # Drain any sockets still in the queue — leaving them open would
+        # leak file descriptors, especially in the test suite.
+        while True:
+            try:
+                request, _ = self._work_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self.shutdown_request(request)
+            except OSError:
+                pass
+        # Workers exit on the next Queue.get(timeout=0.5) tick. We do not
+        # join them: they're daemon and a stuck handler must not block
+        # shutdown.
+
+    def _worker_loop(self):
+        while not self._shutdown_event.is_set():
+            try:
+                item = self._work_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            request, client_address = item
+            try:
+                self.finish_request(request, client_address)
+            except Exception:
+                self.handle_error(request, client_address)
+            finally:
+                try:
+                    self.shutdown_request(request)
+                except OSError:
+                    pass
+
+    _OVERLOADED_BODY = b'{"error":"Server overloaded, try again later"}'
+    _OVERLOADED_RESPONSE = (
+        b"HTTP/1.1 503 Service Unavailable\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Connection: close\r\n"
+        b"Content-Length: " + str(len(_OVERLOADED_BODY)).encode('ascii') + b"\r\n"
+        b"\r\n"
+        + _OVERLOADED_BODY
+    )
+
+    def _refuse_overloaded(self, request):
+        """Best-effort 503 then close. Runs in the accept (main) thread."""
+        # Short send timeout so a slow consumer cannot stall the accept loop.
+        try:
+            request.settimeout(0.1)
+            request.sendall(self._OVERLOADED_RESPONSE)
+        except (OSError, socket.timeout, TimeoutError):
             pass
-        else:
-            super().handle_error(request, client_address)
+        finally:
+            try:
+                self.shutdown_request(request)
+            except OSError:
+                pass
+
+
+# Backward-compat alias: older test fixtures and external code may
+# import QuietHTTPServer by name.
+class QuietHTTPServer(PooledHTTPServer):
+    pass
 
 # Global state (initialized in main() or by test fixtures)
 DATA_DIR = None
@@ -770,6 +880,15 @@ def main():
     )
 
     parser.add_argument(
+        '--max-threads',
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        metavar='N',
+        help=f'Max concurrent worker threads (default: {DEFAULT_MAX_WORKERS}). '
+             'Excess connections receive 503 Service Unavailable immediately.'
+    )
+
+    parser.add_argument(
         '--rate-limit',
         type=int,
         default=10,
@@ -817,6 +936,8 @@ def main():
         parser.error("--max-projects must be >= 0")
     if args.max_body_size < 1:
         parser.error("--max-body-size must be >= 1")
+    if args.max_threads < 1:
+        parser.error("--max-threads must be >= 1")
     if args.rate_limit < 0:
         parser.error("--rate-limit must be >= 0")
     if args.ban_duration < 1:
@@ -879,7 +1000,11 @@ def main():
         print("Add project keys to this file to approve them, or use --accept-unknown flag")
 
     # Start server
-    server = QuietHTTPServer((args.host, args.port), BuildNumberHandler)
+    server = PooledHTTPServer(
+        (args.host, args.port),
+        BuildNumberHandler,
+        max_workers=args.max_threads,
+    )
 
     print(f"Build Number Counter Server starting...")
     print(f"Listening on {args.host}:{args.port}")
@@ -888,6 +1013,7 @@ def main():
     print(f"Max body size: {max_body_size} bytes")
     print(f"Max projects: {'unlimited' if max_projects == 0 else max_projects}"
           f"{' (only enforced with --accept-unknown)' if max_projects > 0 else ''}")
+    print(f"Worker threads: {args.max_threads} (queue: {args.max_threads})")
     if rate_limit > 0:
         ban_info = "permanent" if ban_permanent else f"temporary ({ban_duration}s)"
         print(f"Rate limit: {rate_limit} req/min per IP, ban: {ban_info}")

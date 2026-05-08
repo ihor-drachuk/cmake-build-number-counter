@@ -1,6 +1,7 @@
 import http.client
 import json
 import os
+import socket
 import threading
 import time
 import urllib.request
@@ -10,7 +11,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from conftest import _start_server
+from conftest import _start_server, _stop_server
 
 
 def post_json(base_url, path, data, token=None):
@@ -37,10 +38,16 @@ _SERVER_REJECTED = "CONNECTION_RESET_BY_SERVER"
 
 
 def _expect_rejection(func, *args, **kwargs):
-    """Call func and return (status, data), or _SERVER_REJECTED on TCP reset."""
+    """Call func and return (status, data), or _SERVER_REJECTED on TCP reset.
+
+    IncompleteRead also counts as rejection: if the server's early error
+    response races with a client-side close, http.client may surface the
+    truncated read as IncompleteRead instead of a clean status.
+    """
     try:
         return func(*args, **kwargs)
-    except (ConnectionError, OSError, urllib.error.URLError):
+    except (ConnectionError, OSError, urllib.error.URLError,
+            http.client.IncompleteRead):
         return _SERVER_REJECTED
 
 
@@ -128,6 +135,25 @@ class TestServerApproval:
         status, data = post_json(strict_server, "/increment", {"project_key": "approved-project"})
         assert status == 200
         assert data["build_number"] == 1
+
+
+def _open_slow_socket(url, content_length=100):
+    """Open a TCP connection that sends headers and stalls on the body.
+
+    Used to occupy worker pool slots without ever completing a request.
+    Caller is responsible for closing the socket.
+    """
+    parsed = urlparse(url)
+    s = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+    headers = (
+        f"POST /increment HTTP/1.1\r\n"
+        f"Host: {parsed.hostname}:{parsed.port}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: {content_length}\r\n"
+        f"\r\n"
+    )
+    s.sendall(headers.encode('ascii'))
+    return s
 
 
 def _post_raw(base_url, path, body_bytes, headers=None):
@@ -224,7 +250,7 @@ class TestMaxProjectLimit:
                 status, _ = post_json(url, "/increment", {"project_key": f"proj-{i}"})
                 assert status == 200
         finally:
-            httpd.shutdown()
+            _stop_server(httpd)
 
     def test_preexisting_over_limit(self, tmp_path, monkeypatch):
         import server as server_module
@@ -239,7 +265,7 @@ class TestMaxProjectLimit:
             status, _ = post_json(url, "/increment", {"project_key": "new-proj"})
             assert status == 507
         finally:
-            httpd.shutdown()
+            _stop_server(httpd)
 
     def test_response_includes_project_key(self, limited_server):
         for i in range(3):
@@ -421,8 +447,11 @@ class TestTokensCache:
         def writer():
             i = 0
             while not stop.is_set():
-                self._write_tokens(server_module,
-                                   {"tokens": {f"v{i}": {"name": f"v{i}"}}})
+                try:
+                    self._write_tokens(server_module,
+                                       {"tokens": {f"v{i}": {"name": f"v{i}"}}})
+                except (FileNotFoundError, PermissionError, OSError):
+                    return  # tmp_path teardown — writer must exit cleanly
                 i += 1
                 time.sleep(0.005)
 
@@ -681,7 +710,7 @@ class TestRateLimiting:
                 status, _ = post_json(url, "/increment", {"project_key": "test"})
                 assert status == 200
         finally:
-            httpd.shutdown()
+            _stop_server(httpd)
 
     def test_get_and_post_share_limit(self, rate_limited_server):
         """GET and POST requests share the same rate bucket."""
@@ -722,7 +751,7 @@ class TestRateLimiting:
                 assert result[0] == 429
                 assert result[1]["ban_type"] == "permanent"
         finally:
-            httpd.shutdown()
+            _stop_server(httpd)
 
     def test_permanent_ban_response_format(self, tmp_path, monkeypatch):
         """Permanent ban response has no retry_after_seconds."""
@@ -742,7 +771,7 @@ class TestRateLimiting:
             assert result[1]["ban_type"] == "permanent"
             assert "retry_after_seconds" not in result[1]
         finally:
-            httpd.shutdown()
+            _stop_server(httpd)
 
     def test_permanent_unban_via_file(self, tmp_path, monkeypatch):
         """Removing IP from banned_ips.json unbans it (mtime-based refresh)."""
@@ -777,7 +806,7 @@ class TestRateLimiting:
             status, _ = post_json(url, "/increment", {"project_key": "test"})
             assert status == 200
         finally:
-            httpd.shutdown()
+            _stop_server(httpd)
 
     def test_cleanup_removes_stale_entries(self, monkeypatch):
         """cleanup_rate_data() removes IPs with only old timestamps."""
@@ -947,3 +976,368 @@ class TestSetEndpoint:
             "project_key": "../../bad", "version": 5
         })
         assert status == 400
+
+
+class TestPooledHTTPServer:
+    """Worker thread pool, bounded queue, 503 backpressure, daemon workers."""
+
+    # --- happy path ---
+
+    def test_basic_request_through_pool(self, running_server):
+        """Normal request still works through the worker pool (regression)."""
+        status, data = post_json(running_server, "/increment", {"project_key": "t"})
+        assert status == 200
+        assert data["build_number"] == 1
+
+    def test_concurrent_increments_no_lost_updates(self, tmp_path, monkeypatch):
+        """100 concurrent increments produce build numbers 1..100, no duplicates.
+
+        Spins up a server with enough workers + queue (max_workers=16 → 32
+        in-flight capacity) so the test does not collide with the server's
+        own 503 backpressure. We are testing the lock, not the pool.
+        """
+        import concurrent.futures
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=16)
+        try:
+            N = 100
+            # Client concurrency capped at server capacity; clients beyond
+            # that block at TCP accept until a server slot frees, which is
+            # the desired backpressure behavior.
+            CLIENT_CONCURRENCY = 16
+
+            def worker(_):
+                return post_json(url, "/increment", {"project_key": "race"})
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=CLIENT_CONCURRENCY) as ex:
+                results = list(ex.map(worker, range(N)))
+
+            statuses = [r[0] for r in results]
+            assert all(s == 200 for s in statuses), f"got non-200: {statuses}"
+            numbers = sorted(r[1]["build_number"] for r in results)
+            assert numbers == list(range(1, N + 1))
+        finally:
+            _stop_server(httpd)
+
+    def test_concurrent_distinct_projects(self, tmp_path, monkeypatch):
+        """Multiple project keys are isolated under concurrent load."""
+        import concurrent.futures
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=8)
+        try:
+            keys = ["a", "b", "c", "d"]
+            per_key = 5
+
+            def worker(idx):
+                key = keys[idx % len(keys)]
+                return key, post_json(url, "/increment", {"project_key": key})
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                results = list(ex.map(worker, range(per_key * len(keys))))
+
+            per_key_numbers = {k: [] for k in keys}
+            for key, (status, data) in results:
+                assert status == 200
+                per_key_numbers[key].append(data["build_number"])
+            for k, nums in per_key_numbers.items():
+                assert sorted(nums) == list(range(1, per_key + 1))
+        finally:
+            _stop_server(httpd)
+
+    # --- error handling ---
+
+    def _read_503_or_rst(self, url, path='/'):
+        """Open a raw socket, send a complete request, expect 503 or RST.
+
+        Avoids http.client's two-phase send (headers then body) which on
+        Windows races with our immediate close after writing 503 →
+        ConnectionAbortedError instead of a parsable response. We send
+        everything in a single sendall() so the server has the full request
+        before it decides to refuse.
+        """
+        parsed = urlparse(url)
+        s = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+        try:
+            req = (
+                f"{('GET' if path == '/' else 'POST')} {path} HTTP/1.1\r\n"
+                f"Host: {parsed.hostname}:{parsed.port}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: 0\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+            )
+            s.sendall(req.encode('ascii'))
+            # Read until EOF.
+            chunks = []
+            s.settimeout(3.0)
+            try:
+                while True:
+                    data = s.recv(4096)
+                    if not data:
+                        break
+                    chunks.append(data)
+            except (socket.timeout, OSError):
+                pass
+            return b''.join(chunks)
+        finally:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+    def test_503_when_queue_full(self, tmp_path, monkeypatch):
+        """All worker+queue slots taken by slow connections → 503 or RST."""
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=1)
+        try:
+            # 2 slow sockets: 1 occupies worker (blocks reading body),
+            # 1 occupies the queue slot (max_workers == queue size == 1).
+            slow = [_open_slow_socket(url) for _ in range(2)]
+            time.sleep(0.2)
+
+            # Third request — accept either 503 or empty RST (TCP race on
+            # Windows; ADR 001 documents this for early-error responses).
+            response = self._read_503_or_rst(url)
+            if response:
+                first_line = response.split(b"\r\n", 1)[0].decode('ascii', 'replace')
+                assert "503" in first_line, f"expected 503 status, got {first_line!r}"
+
+            for s in slow:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+        finally:
+            _stop_server(httpd)
+
+    def test_503_response_is_well_formed_http(self, tmp_path, monkeypatch):
+        """When 503 reaches the client, it is well-formed HTTP/JSON."""
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=1)
+        try:
+            slow = [_open_slow_socket(url) for _ in range(2)]
+            time.sleep(0.2)
+
+            response = self._read_503_or_rst(url)
+            if not response:
+                # Pure TCP RST — covered by test_503_when_queue_full.
+                return
+            head, _, body = response.partition(b"\r\n\r\n")
+            head_text = head.decode('ascii', 'replace')
+            assert "503" in head_text.split("\r\n", 1)[0]
+            assert "application/json" in head_text.lower()
+            payload = json.loads(body.decode('utf-8'))
+            assert "error" in payload
+
+            for s in slow:
+                s.close()
+        finally:
+            _stop_server(httpd)
+
+    def test_handle_error_silences_connection_reset(self, running_server):
+        """Client closing socket mid-request must not log a traceback."""
+        parsed = urlparse(running_server)
+        # Open and close immediately with no data — server may get
+        # ConnectionResetError or similar inside the worker.
+        s = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+        s.sendall(b"POST /increment HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\n")
+        s.close()
+        time.sleep(0.2)
+
+        # Server still alive and serving:
+        status, _ = post_json(running_server, "/increment", {"project_key": "still-alive"})
+        assert status == 200
+
+    # --- edge cases ---
+
+    def test_workers_are_daemon(self, running_server):
+        """All cbnc-worker-* threads must be daemon."""
+        cbnc_workers = [
+            t for t in threading.enumerate()
+            if t.name.startswith('cbnc-worker-')
+        ]
+        assert cbnc_workers, "no worker threads found"
+        for t in cbnc_workers:
+            assert t.daemon, f"{t.name} is not daemon"
+
+    def test_workers_count_matches_max_workers(self, tmp_path, monkeypatch):
+        """Pool starts exactly max_workers worker threads."""
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=7)
+        try:
+            assert len(httpd._workers) == 7
+            assert all(t.is_alive() for t in httpd._workers)
+        finally:
+            _stop_server(httpd)
+
+    def test_server_close_idempotent(self, tmp_path, monkeypatch):
+        """Calling shutdown+server_close twice does not raise."""
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=2)
+        _stop_server(httpd)
+        # Second call: shutdown raises RuntimeError because serve_forever
+        # already exited; we tolerate that via the helper's contract,
+        # but server_close must remain idempotent on its own.
+        httpd.server_close()  # must not raise
+
+    def test_get_root_works_via_pool(self, running_server):
+        """GET / still returns service info through the worker pool."""
+        status, data = get_json(running_server, "/")
+        assert status == 200
+        assert "service" in data
+
+    # --- tricky-timed ---
+
+    def test_503_then_normal_recovers(self, tmp_path, monkeypatch):
+        """After overload subsides, the pool returns to normal operation."""
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=1)
+        try:
+            slow = [_open_slow_socket(url) for _ in range(2)]
+            time.sleep(0.2)
+
+            # Confirm 503 right now.
+            r = _expect_rejection(post_json, url, "/increment", {"project_key": "x"})
+            if r is not _SERVER_REJECTED:
+                assert r[0] == 503
+
+            # Close slow connections, give worker a moment to recover.
+            for s in slow:
+                s.close()
+            time.sleep(0.5)
+
+            # Normal request now succeeds.
+            status, data = post_json(url, "/increment", {"project_key": "recovered"})
+            assert status == 200
+            assert data["build_number"] == 1
+        finally:
+            _stop_server(httpd)
+
+
+class TestTOCTOUAndDiscriminatedResults:
+    """The TOCTOU-safe approval/limit/increment dispatch from Commit 1.
+
+    Concurrent tests live here too (race regressions are the whole point
+    of the discriminated result), even though they exercise the pool.
+    """
+
+    # --- happy path ---
+
+    def test_increment_known_project_returns_200(self, strict_server):
+        status, data = post_json(strict_server, "/increment",
+                                 {"project_key": "approved-project"})
+        assert status == 200
+        assert data["build_number"] == 1
+
+    def test_set_known_project_returns_200(self, strict_server):
+        status, data = post_json(strict_server, "/set",
+                                 {"project_key": "approved-project", "version": 7})
+        assert status == 200
+        assert data["build_number"] == 7
+
+    # --- error handling ---
+
+    def test_increment_unapproved_returns_403(self, strict_server):
+        status, data = post_json(strict_server, "/increment",
+                                 {"project_key": "new-project"})
+        assert status == 403
+        assert "not approved" in data["error"]
+
+    def test_increment_limit_reached_returns_507(self, limited_server):
+        # limited_server has max_projects=3; create 3 first, then the 4th fails.
+        for i in range(3):
+            status, _ = post_json(limited_server, "/increment",
+                                  {"project_key": f"p{i}"})
+            assert status == 200
+        status, data = post_json(limited_server, "/increment",
+                                 {"project_key": "p3"})
+        assert status == 507
+        assert "limit" in data["error"].lower()
+        assert data["max_projects"] == 3
+
+    def test_set_unapproved_returns_403_in_strict(self, strict_server):
+        status, data = post_json(strict_server, "/set",
+                                 {"project_key": "unknown-key", "version": 1})
+        assert status == 403
+
+    # --- edge cases ---
+
+    def test_set_force_unapproved_via_function(self, tmp_path):
+        """Direct call with force_unapproved=True bypasses approval (CLI path)."""
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "data"))
+        with open(server_module.BUILD_NUMBERS_FILE, 'w') as f:
+            json.dump({}, f)
+
+        # Without the flag, accept_unknown=False → unapproved.
+        try:
+            old_accept = server_module.accept_unknown
+            server_module.accept_unknown = False
+            result = server_module.set_build_number("brand-new", 42)
+            assert result.status == 'unapproved'
+
+            # With force_unapproved=True, the CLI must succeed regardless.
+            result = server_module.set_build_number("brand-new", 42,
+                                                    force_unapproved=True)
+            assert result.status == 'ok'
+            assert result.build_number == 42
+        finally:
+            server_module.accept_unknown = old_accept
+
+    def test_increment_local_version_higher_used(self, running_server):
+        # First sets server to 5.
+        status, data = post_json(running_server, "/increment",
+                                 {"project_key": "lv", "local_version": 5})
+        assert status == 200
+        assert data["build_number"] == 6  # max(5, 0) + 1 = 6
+
+    def test_increment_local_version_lower_ignored(self, running_server):
+        post_json(running_server, "/increment", {"project_key": "lv2"})
+        post_json(running_server, "/increment", {"project_key": "lv2"})  # now 2
+        status, data = post_json(running_server, "/increment",
+                                 {"project_key": "lv2", "local_version": 1})
+        assert status == 200
+        assert data["build_number"] == 3  # max(0/lower, 2) + 1
+
+    def test_existing_project_increments_when_at_limit(self, tmp_path, monkeypatch):
+        """Already-known project still increments even when max_projects is hit."""
+        import server as server_module
+
+        url, httpd = _start_server(
+            tmp_path, monkeypatch, accept=True,
+            initial_data={"a": 1, "b": 2, "c": 3, "d": 4, "e": 5},
+        )
+        try:
+            monkeypatch.setattr(server_module, 'max_projects', 3)
+            # Existing project — limit must not apply.
+            status, data = post_json(url, "/increment", {"project_key": "a"})
+            assert status == 200
+            assert data["build_number"] == 2
+            # New project — rejected.
+            status, _ = post_json(url, "/increment", {"project_key": "f"})
+            assert status == 507
+        finally:
+            _stop_server(httpd)
+
+    # --- tricky-timed (concurrency) ---
+
+    def test_concurrent_new_projects_limit_respected(self, tmp_path, monkeypatch):
+        """Under concurrent load, project limit is never exceeded."""
+        import concurrent.futures
+        import server as server_module
+
+        # max_workers=20 + queue=20 → 40 in-flight capacity, so the test's
+        # 20 simultaneous clients all reach the handler (no 503 noise).
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=20)
+        try:
+            monkeypatch.setattr(server_module, 'max_projects', 5)
+
+            N = 20
+
+            def worker(i):
+                return post_json(url, "/increment", {"project_key": f"p{i}"})
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=N) as ex:
+                results = list(ex.map(worker, range(N)))
+
+            ok = sum(1 for s, _ in results if s == 200)
+            limit = sum(1 for s, _ in results if s == 507)
+            assert ok == 5, f"expected 5 success, got {ok}"
+            assert limit == 15, f"expected 15 rejected, got {limit}"
+        finally:
+            _stop_server(httpd)
