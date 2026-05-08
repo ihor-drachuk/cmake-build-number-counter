@@ -131,11 +131,6 @@ class PooledHTTPServer(HTTPServer):
             pass
 
 
-# Backward-compat alias: older test fixtures and external code may
-# import QuietHTTPServer by name.
-class QuietHTTPServer(PooledHTTPServer):
-    pass
-
 # Global state (initialized in main() or by test fixtures)
 DATA_DIR = None
 BUILD_NUMBERS_FILE = None
@@ -201,23 +196,6 @@ def save_json_file(filename, data):
         f.flush()
         os.fsync(f.fileno())
     os.replace(temp_file, filename)
-
-
-def is_project_approved(project_key):
-    """
-    Check if project key is approved.
-    A project is considered approved if it already exists in build_numbers.json.
-    """
-    build_numbers = load_json_file(BUILD_NUMBERS_FILE, {})
-    return project_key in build_numbers
-
-
-def is_project_limit_reached():
-    """Check whether the project count has reached the configured maximum."""
-    if max_projects == 0:
-        return False
-    build_numbers = load_json_file(BUILD_NUMBERS_FILE, {})
-    return len(build_numbers) >= max_projects
 
 
 def load_tokens():

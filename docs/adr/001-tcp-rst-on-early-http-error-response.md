@@ -31,7 +31,7 @@ Rationale:
 ## Implementation
 
 ### Server side
-`QuietHTTPServer` overrides `handle_error()` to silently ignore `ConnectionError` — the server does not crash or log noisy tracebacks when clients disconnect mid-response. This is the standard pattern used by Django, Werkzeug, and Prometheus (see `socketserver` docs: `handle_error()` "may be overridden").
+`PooledHTTPServer` overrides `handle_error()` to silently ignore benign network errors (`ConnectionError`, `socket.timeout`, `TimeoutError`) — the server does not crash or log noisy tracebacks when clients disconnect mid-response or hit the per-recv timeout. This is the standard pattern used by Django, Werkzeug, and Prometheus (see `socketserver` docs: `handle_error()` "may be overridden").
 
 ### Test side
 A helper `_expect_rejection(func, ...)` wraps calls that may trigger server rejection. It returns the normal `(status, data)` tuple, or a `_SERVER_REJECTED` sentinel if the TCP connection was reset. Tests then:
