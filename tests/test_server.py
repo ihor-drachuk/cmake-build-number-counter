@@ -1399,15 +1399,8 @@ class TestSocketTimeout:
 
     def test_partial_body_returns_408(self, tmp_path, monkeypatch):
         """Headers sent, body never arrives → server times out → 408."""
-        import server as server_module
-        # Use a 1-second timeout to keep the test fast.
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
-        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
-        # _start_server's monkeypatch sets timeout=None — re-apply the 1s
-        # override after the fixture runs.
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True,
+                                   handler_timeout=1)
         try:
             s = self._send_partial_request(url, content_length=100)
             try:
@@ -1424,12 +1417,8 @@ class TestSocketTimeout:
 
     def test_408_response_is_well_formed_json(self, tmp_path, monkeypatch):
         """When the 408 reaches the client, body is valid JSON with 'error'."""
-        import server as server_module
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
-        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True,
+                                   handler_timeout=1)
         try:
             parsed = urlparse(url)
             s = self._send_partial_request(url, content_length=100)
@@ -1462,12 +1451,8 @@ class TestSocketTimeout:
 
     def test_dead_socket_after_timeout_doesnt_crash_worker(self, tmp_path, monkeypatch):
         """Client closing socket before 408 arrives → worker recovers cleanly."""
-        import server as server_module
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
-        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True,
+                                   handler_timeout=1)
         try:
             # Send headers, then immediately drop the connection.
             s = self._send_partial_request(url, content_length=100)
@@ -1488,10 +1473,8 @@ class TestSocketTimeout:
         We verify behaviorally: with timeout=None, a 0.6s pause between
         headers and body still completes successfully (no 408).
         """
-        import server as server_module
+        # Default fixture sets timeout=None — exactly what we want.
         url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
-        # _start_server already monkeypatches timeout=None — reaffirm.
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', None)
 
         try:
             parsed = urlparse(url)
@@ -1536,16 +1519,8 @@ class TestSocketTimeout:
         but the wall-clock max_request_seconds deadline does, forcing
         the worker to release the socket.
         """
-        import server as server_module
-        # Tight wall-clock deadline so the test runs fast.
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'max_request_seconds', 1)
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
-        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
-        # _start_server applies timeout=None — re-apply.
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'max_request_seconds', 1)
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True,
+                                   handler_timeout=1, max_request_seconds=1)
         try:
             parsed = urlparse(url)
             s = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
@@ -1592,13 +1567,9 @@ class TestSocketTimeout:
         """Body sent in chunks slower than the timeout but each chunk
         arrives in time → request succeeds (timeout is per-recv, not
         end-to-end)."""
-        import server as server_module
-        # 1s idle timeout. We send with 0.3s gaps — each gap < 1s, so no 408.
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
-        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
-        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
-
+        # 1s idle timeout. We send with 0.05s gaps — each gap < 1s, so no 408.
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True,
+                                   handler_timeout=1)
         try:
             parsed = urlparse(url)
             body = b'{"project_key":"chunked"}'

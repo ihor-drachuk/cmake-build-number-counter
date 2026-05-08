@@ -16,12 +16,18 @@ def tmp_local_file(tmp_path):
     return str(tmp_path / "build_number.txt")
 
 
-def _start_server(tmp_path, monkeypatch, *, initial_data=None, accept=True, max_workers=4):
+def _start_server(tmp_path, monkeypatch, *, initial_data=None, accept=True,
+                  max_workers=4, handler_timeout=None, max_request_seconds=None):
     """Helper: start in-process server with temp data dir.
 
     Rate limiting is disabled by default to avoid interference between tests.
     Use the rate_limited_server fixture for rate-limit-specific tests.
     Worker pool is small (4) so 73+ tests do not spawn thousands of threads.
+
+    handler_timeout / max_request_seconds default to None (per-recv timeout
+    disabled, wall-clock deadline disabled) so slow CI does not cause
+    spurious 408s. Slowloris-specific tests pass explicit small values
+    instead of having to monkeypatch around the fixture.
     """
     import server as server_module
     data_dir = str(tmp_path / "server-data")
@@ -33,9 +39,14 @@ def _start_server(tmp_path, monkeypatch, *, initial_data=None, accept=True, max_
 
     monkeypatch.setattr(server_module, 'accept_unknown', accept)
     monkeypatch.setattr(server_module, 'rate_limit', 0)  # disable rate limiting in tests
-    # Disable socket timeout in tests — slow CI / debugger pauses must not
-    # cause spurious 408s. Slowloris-specific tests opt back in explicitly.
-    monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', None)
+    monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', handler_timeout)
+    if max_request_seconds is None:
+        # Disable wall-clock deadline by setting an effectively-infinite value.
+        monkeypatch.setattr(server_module.BuildNumberHandler,
+                            'max_request_seconds', 3600)
+    else:
+        monkeypatch.setattr(server_module.BuildNumberHandler,
+                            'max_request_seconds', max_request_seconds)
 
     httpd = server_module.PooledHTTPServer(
         ('127.0.0.1', 0),
