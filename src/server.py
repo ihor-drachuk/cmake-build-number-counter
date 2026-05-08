@@ -117,29 +117,20 @@ class PooledHTTPServer(HTTPServer):
                 except OSError:
                     pass
 
-    _OVERLOADED_BODY = b'{"error":"Server overloaded, try again later"}'
-    _OVERLOADED_RESPONSE = (
-        b"HTTP/1.1 503 Service Unavailable\r\n"
-        b"Content-Type: application/json\r\n"
-        b"Connection: close\r\n"
-        b"Content-Length: " + str(len(_OVERLOADED_BODY)).encode('ascii') + b"\r\n"
-        b"\r\n"
-        + _OVERLOADED_BODY
-    )
-
     def _refuse_overloaded(self, request):
-        """Best-effort 503 then close. Runs in the accept (main) thread."""
-        # Short send timeout so a slow consumer cannot stall the accept loop.
+        """Close the socket immediately on overload.
+
+        This runs on the accept (main) thread, so any synchronous I/O
+        here stalls accept() and defeats the bounded-queue design — even
+        a 100ms send timeout, multiplied across a sustained overload,
+        steals real capacity. We just shut the socket down. The client
+        sees an immediate RST/FIN, which existing rejection-tolerant
+        clients already handle (see ADR 001).
+        """
         try:
-            request.settimeout(0.1)
-            request.sendall(self._OVERLOADED_RESPONSE)
-        except (OSError, socket.timeout, TimeoutError):
+            self.shutdown_request(request)
+        except OSError:
             pass
-        finally:
-            try:
-                self.shutdown_request(request)
-            except OSError:
-                pass
 
 
 # Backward-compat alias: older test fixtures and external code may

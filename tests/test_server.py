@@ -1767,23 +1767,28 @@ class TestPooledHTTPServer:
         finally:
             _stop_server(httpd)
 
-    def test_503_response_is_well_formed_http(self, tmp_path, monkeypatch):
-        """When 503 reaches the client, it is well-formed HTTP/JSON."""
+    def test_overload_closes_connection_immediately(self, tmp_path, monkeypatch):
+        """Refused-overload path closes the socket without writing a body.
+
+        Writing a 503 body from the accept thread (even with a 100ms send
+        timeout) steals capacity from accept() under sustained overload,
+        defeating the bounded-queue design. We instead close the socket
+        immediately; clients see RST/FIN. This test confirms that
+        behavior — no HTTP response bytes arrive, the recv just ends.
+        """
         url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=1)
         try:
             slow = [_open_slow_socket(url) for _ in range(2)]
             time.sleep(0.2)
 
             response = self._read_503_or_rst(url)
-            if not response:
-                # Pure TCP RST — covered by test_503_when_queue_full.
-                return
-            head, _, body = response.partition(b"\r\n\r\n")
-            head_text = head.decode('ascii', 'replace')
-            assert "503" in head_text.split("\r\n", 1)[0]
-            assert "application/json" in head_text.lower()
-            payload = json.loads(body.decode('utf-8'))
-            assert "error" in payload
+            # Empty response body = clean close. Some platforms might
+            # surface kernel buffers — accept either, just not a 503 body.
+            if response:
+                # On the off chance any bytes arrive, they must NOT include
+                # an HTTP/1.1 status line (we do not write one anymore).
+                assert b"HTTP/1.1" not in response[:20], \
+                    f"unexpected HTTP response from refused socket: {response[:100]!r}"
 
             for s in slow:
                 s.close()
