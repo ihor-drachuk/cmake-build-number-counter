@@ -13,20 +13,18 @@ Automatic build number incrementing system for CMake projects. Three components:
 ## Architecture
 
 ```
-Developer's machine              Build server
-┌──────────────────┐           ┌──────────────┐
-│ CMakeLists.txt   │           │ server.py    │
-│   └─ increment_  │           │   └─ /incr.  │
-│      build_num() │           │      endpoint│
-│      ↓           │  HTTP     │      ↓       │
-│ CMake custom     │ ──────►   │ build_numbers│
-│ target (build    │ ◄──────   │ .json        │
-│ time)            │           └──────────────┘
-│   └─ client.py   │
-│      ↓           │
-│ cbnc-version.h   │
-│ build_number.txt │
-└──────────────────┘
+Developer's machine                          Build server
+┌─────────────────────────────┐            ┌──────────────────────┐
+│ CMakeLists.txt              │            │ server.py            │
+│   └─ increment_build_num()  │            │   └─ /increment      │
+│      ↓                      │   HTTP     │      ↓               │
+│ CMake custom target         │ ─────────► │ build_numbers.json   │
+│ (build time)                │ ◄───────── │                      │
+│   └─ client.py              │            │                      │
+│      ↓                      │            │                      │
+│ cbnc-version.h              │            │                      │
+│ build_number.txt            │            │                      │
+└─────────────────────────────┘            └──────────────────────┘
 ```
 
 **Data flow:**
