@@ -1261,7 +1261,7 @@ class TestHealthz:
     # --- tricky-timed ---
 
     def test_healthz_workers_count_correct(self, tmp_path, monkeypatch):
-        """healthz reports the configured worker count."""
+        """healthz reports the configured worker count to loopback callers."""
         url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=7)
         try:
             status, data = get_json(url, "/healthz")
@@ -1269,6 +1269,61 @@ class TestHealthz:
             assert data["workers"] == 7
             # queue_depth is 0 when there is no other traffic.
             assert data["queue_depth"] == 0
+        finally:
+            _stop_server(httpd)
+
+    def test_healthz_hides_internals_from_non_loopback(self, tmp_path, monkeypatch):
+        """Non-loopback callers see status+uptime only — no queue_depth oracle."""
+        import server as server_module
+
+        # Pretend every incoming connection comes from a public IP by
+        # overriding what the handler sees. Patching client_address on
+        # the class level reaches both /healthz and the rate-limit path.
+        original_setup = server_module.BuildNumberHandler.setup
+        def fake_setup(self):
+            original_setup(self)
+            # Replace after super().setup() so socket bookkeeping is intact.
+            self.client_address = ('203.0.113.7', 12345)
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'setup', fake_setup)
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        try:
+            status, data = get_json(url, "/healthz")
+            assert status == 200
+            assert data["status"] == "ok"
+            assert "uptime_seconds" in data
+            # Internals must not leak.
+            assert "workers" not in data
+            assert "queue_depth" not in data
+        finally:
+            _stop_server(httpd)
+
+    def test_healthz_rate_limited_for_non_loopback(self, tmp_path, monkeypatch):
+        """Non-loopback callers are subject to rate limiting on /healthz."""
+        import server as server_module
+
+        # Spoof a public IP for every request.
+        original_setup = server_module.BuildNumberHandler.setup
+        def fake_setup(self):
+            original_setup(self)
+            self.client_address = ('203.0.113.7', 12345)
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'setup', fake_setup)
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        # Reset rate-limit state and turn it on tightly.
+        monkeypatch.setattr(server_module, 'rate_limit', 2)
+        monkeypatch.setattr(server_module, 'rate_tracker', {})
+        monkeypatch.setattr(server_module, 'temp_bans', {})
+        monkeypatch.setattr(server_module, 'permanent_bans', set())
+        try:
+            # First 2 succeed, third gets 429 (or RST under early-error).
+            for _ in range(2):
+                status, _ = get_json(url, "/healthz")
+                assert status == 200
+            third = _expect_rejection(get_json, url, "/healthz")
+            if third != _SERVER_REJECTED:
+                status, _ = third
+                assert status == 429
         finally:
             _stop_server(httpd)
 

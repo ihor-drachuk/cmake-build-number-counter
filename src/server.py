@@ -788,16 +788,25 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
         """Handle GET requests (status/info only)."""
         parsed_path = urlparse(self.path)
 
-        # /healthz bypasses rate limit so the watchdog (or external probe)
-        # cannot accidentally ban itself, and stays cheap to call.
         if parsed_path.path == '/healthz':
+            # Loopback callers (in-process watchdog, Docker HEALTHCHECK in
+            # bridge mode) bypass rate-limit AND see the full payload
+            # including queue_depth. External callers go through normal
+            # rate-limit and see a minimal payload — queue_depth is a
+            # real-time DoS oracle, do not expose it publicly.
+            client_ip = self.client_address[0]
+            is_loopback = client_ip in ('127.0.0.1', '::1', '::ffff:127.0.0.1')
+            if not is_loopback and not check_rate_limit(self):
+                return
             try:
-                self.send_json_response(200, {
+                payload = {
                     'status': 'ok',
-                    'workers': self.server._max_workers,
-                    'queue_depth': self.server._work_queue.qsize(),
                     'uptime_seconds': int(time.monotonic() - _server_start_time),
-                })
+                }
+                if is_loopback:
+                    payload['workers'] = self.server._max_workers
+                    payload['queue_depth'] = self.server._work_queue.qsize()
+                self.send_json_response(200, payload)
             except (OSError, socket.timeout, TimeoutError, BrokenPipeError):
                 pass
             return
