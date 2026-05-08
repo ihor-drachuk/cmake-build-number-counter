@@ -68,6 +68,9 @@ python src/server.py --rate-limit 0
 - **Request size limit** — rejects bodies over `--max-body-size` (default: 1 KB) with 413
 - **Project count limit** — caps auto-created projects at `--max-projects` (default: 100) with 507
 - **Input validation** — project keys must match `[a-zA-Z0-9._-]`, 1-128 chars
+- **Slowloris defense** — per-socket idle timeout of 3 seconds; stalled bodies receive 408
+- **Thread pool cap** — `--max-threads` (default: 64) bounds concurrent connections; overflow gets 503 immediately, preventing thread exhaustion
+- **Watchdog** — `--watchdog` polls `/healthz` and `os._exit(1)` on repeated failure so a wedged process gets restarted by its container orchestrator
 
 ## Recommendations for Production
 

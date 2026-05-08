@@ -101,7 +101,21 @@ Checklist of features and their test status. Update when adding new features or 
 | --set-counter CLI | YES | test_integration | `TestServerSetCounter` |
 | Corrupted build_numbers.json | NO | — | |
 | Corrupted banned_ips.json | NO | — | |
-| Concurrent increments (race condition) | NO | — | |
+| Concurrent increments (race condition) | YES | test_server | `TestPooledHTTPServer.test_concurrent_increments_no_lost_updates` |
+| TOCTOU fix (discriminated result) | YES | test_server | `TestTOCTOUAndDiscriminatedResults` |
+| Concurrent project limit enforcement | YES | test_server | `TestTOCTOUAndDiscriminatedResults.test_concurrent_new_projects_limit_respected` |
+| PooledHTTPServer worker pool | YES | test_server | `TestPooledHTTPServer` |
+| 503 Service Unavailable on overload | YES | test_server | `TestPooledHTTPServer.test_503_when_queue_full` |
+| Daemon worker threads | YES | test_server | `TestPooledHTTPServer.test_workers_are_daemon` |
+| Server close drains queue | YES | test_server | `TestPooledHTTPServer.test_server_close_idempotent` |
+| Socket timeout (Slowloris defense) | YES | test_server | `TestSocketTimeout` |
+| 408 Request Timeout on partial body | YES | test_server | `TestSocketTimeout.test_partial_body_returns_408` |
+| Tokens cache with mtime invalidation | YES | test_server | `TestTokensCache` |
+| Tokens cache concurrent reads | YES | test_server | `TestTokensCache.test_concurrent_cache_reads_no_corruption` |
+| GET /healthz endpoint | YES | test_server | `TestHealthz` |
+| /healthz bypasses rate limit | YES | test_server | `TestHealthz.test_healthz_bypasses_rate_limit` |
+| Watchdog os._exit on failures | YES | test_server | `TestWatchdog` |
+| Watchdog recovers from intermittent failures | YES | test_server | `TestWatchdog.test_recovers_after_intermittent_failure` |
 
 ## Docker (`Dockerfile`)
 

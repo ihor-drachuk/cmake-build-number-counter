@@ -15,6 +15,7 @@ Every `cmake --build` increments the counter and generates a C++ version header 
 - Optional central server for team synchronization
 - Offline fallback with automatic reconnection and sync
 - Token-based authentication, rate limiting, IP banning
+- Hardened HTTP server: thread pool with bounded queue, socket timeout (Slowloris defense), `/healthz` liveness, optional self-watchdog
 - No external dependencies (Python stdlib only)
 - Multi-project support with independent counters
 - Force-set build number for resets and migrations

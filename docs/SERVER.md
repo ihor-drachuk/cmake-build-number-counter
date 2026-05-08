@@ -58,15 +58,35 @@ set BUILD_SERVER_URL=http://your-server:8080      # Windows
 | `--accept-unknown` | off | Auto-approve new project keys |
 | `--max-body-size` | `1024` | Max request body size in bytes |
 | `--max-projects` | `100` | Max project count (`0` = unlimited) |
+| `--max-threads` | `64` | Worker pool size (also queue size). Excess gets `503` |
 | `--rate-limit` | `10` | Max requests per minute per IP (`0` = off) |
 | `--ban-duration` | `600` | Temp ban duration in seconds |
 | `--ban-permanent` | off | Use persistent bans instead of temporary |
+| `--watchdog` | off | In-process liveness probe; `os._exit(1)` on failure |
+| `--watchdog-interval` | `10` | Seconds between watchdog probes |
+| `--watchdog-failures` | `3` | Consecutive failures before exit |
+| `--watchdog-timeout` | `5` | HTTP timeout per probe in seconds |
+
+### Concurrency Model
+
+The server uses a fixed pool of `--max-threads` daemon worker threads
+fed by a bounded queue (queue size equals `--max-threads`). The accept
+loop runs only in the main thread and pushes incoming sockets into the
+queue; workers pull from the queue and run the request handler.
+
+This caps concurrent in-flight + queued requests at `2 × max-threads`.
+Excess connections receive `503 Service Unavailable` immediately —
+this is the hard backpressure that protects against thread exhaustion
+from Slowloris-style attacks. A connection-level socket timeout (3 s)
+also prevents a stalled body from holding a worker indefinitely; such
+clients receive `408 Request Timeout`.
 
 ### API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | Service info |
+| `GET` | `/healthz` | Liveness probe (no auth, no rate limit) |
 | `POST` | `/increment` | Increment and return build number |
 | `POST` | `/set` | Force-set build number to exact value |
 
@@ -78,6 +98,16 @@ set BUILD_SERVER_URL=http://your-server:8080      # Windows
 **`POST /set`** body:
 ```json
 {"project_key": "myproject", "version": 42}
+```
+
+**`GET /healthz`** response:
+```json
+{
+  "status": "ok",
+  "workers": 64,
+  "queue_depth": 0,
+  "uptime_seconds": 3600
+}
 ```
 
 ### Token Management
