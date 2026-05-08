@@ -1457,6 +1457,66 @@ class TestSocketTimeout:
 
     # --- tricky-timed ---
 
+    def test_header_slowloris_killed_by_wall_clock_deadline(self, tmp_path, monkeypatch):
+        """Drip-feeding HEADERS just under per-recv timeout still gets killed.
+
+        This is the canonical Slowloris attack: send one byte every
+        (timeout - epsilon) seconds. The per-recv timeout never trips,
+        but the wall-clock max_request_seconds deadline does, forcing
+        the worker to release the socket.
+        """
+        import server as server_module
+        # Tight wall-clock deadline so the test runs fast.
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'max_request_seconds', 1)
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        # _start_server applies timeout=None — re-apply.
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'max_request_seconds', 1)
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        try:
+            parsed = urlparse(url)
+            s = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+            try:
+                # Send the request line, then drip-feed header bytes
+                # 0.4 s apart. Per-recv (1 s) never trips. After the
+                # 1 s wall-clock deadline, the worker shuts the socket
+                # down — recv returns empty / OSError on our side.
+                s.sendall(b"POST /increment HTTP/1.1\r\n")
+                start = time.monotonic()
+                killed = False
+                # Try to send slowly for up to 5 seconds. Server should
+                # close us well before then.
+                for i in range(20):
+                    try:
+                        s.sendall(b"X-Pad: y\r\n")
+                    except OSError:
+                        killed = True
+                        break
+                    elapsed = time.monotonic() - start
+                    if elapsed > 4.5:
+                        break
+                    time.sleep(0.4)
+
+                # Either send raised OSError, or recv returns no data /
+                # EOF because the server shut the socket down.
+                s.settimeout(2.0)
+                try:
+                    data = s.recv(4096)
+                    # Empty recv means peer closed (FIN).
+                    closed = (data == b'')
+                except (OSError, socket.timeout):
+                    closed = True
+                assert killed or closed, "Server did not enforce wall-clock deadline"
+                # And it must have happened within the deadline window.
+                assert time.monotonic() - start < 4.0, \
+                    "Server took too long to enforce deadline"
+            finally:
+                s.close()
+        finally:
+            _stop_server(httpd)
+
     def test_chunked_body_within_timeout_succeeds(self, tmp_path, monkeypatch):
         """Body sent in chunks slower than the timeout but each chunk
         arrives in time → request succeeds (timeout is per-recv, not

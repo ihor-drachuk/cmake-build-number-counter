@@ -545,11 +545,43 @@ def set_build_number(project_key, version, force_unapproved=False):
 class BuildNumberHandler(BaseHTTPRequestHandler):
     """HTTP request handler for build number operations."""
 
-    # StreamRequestHandler.setup() applies this to self.connection:
-    # self.rfile.read() and self.wfile.write() will raise socket.timeout
-    # after this many seconds of socket inactivity. Defends against
-    # Slowloris-style clients that send headers and then stall on body.
-    timeout = 3
+    # Per-recv socket timeout (StreamRequestHandler.setup applies it to
+    # self.connection). Caps the wait on any single read/write. Combined
+    # with the wall-clock deadline below, this defends against Slowloris:
+    # per-recv alone is bypassable by drip-feeding bytes just under the
+    # timeout; the wall-clock deadline puts a hard ceiling regardless.
+    timeout = 1
+
+    # Total wall-clock seconds a single request may occupy a worker.
+    # Bodies are bounded by --max-body-size (default 1 KB), so 5 s is
+    # generous for any legitimate client. Drip-feed Slowloris hits
+    # this limit and the connection is closed forcibly.
+    max_request_seconds = 5
+
+    def setup(self):
+        super().setup()
+        # Hard wall-clock deadline. The timer fires on a daemon thread
+        # and shuts the socket down for both directions, which forces
+        # any blocked rfile.read/wfile.write to raise OSError so the
+        # worker can move on. We do NOT close the socket here — the
+        # worker still owns its lifecycle (shutdown_request will close
+        # it normally).
+        sock = self.connection
+        def _hard_kill():
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        self._deadline_timer = threading.Timer(self.max_request_seconds, _hard_kill)
+        self._deadline_timer.daemon = True
+        self._deadline_timer.start()
+
+    def finish(self):
+        # Cancel the deadline timer if the request finished before it fired.
+        timer = getattr(self, '_deadline_timer', None)
+        if timer is not None:
+            timer.cancel()
+        super().finish()
 
     def log_message(self, format, *args):
         """Override to customize logging."""
@@ -603,13 +635,17 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
                 'received_bytes': e.size,
             })
             return
-        except (socket.timeout, TimeoutError):
+        except (socket.timeout, TimeoutError, OSError):
+            # Per-recv timeout, wall-clock deadline (which shuts the
+            # socket down → OSError on next read), or generic socket
+            # error mid-body. All three count as Slowloris/abandoned;
+            # respond 408 best-effort and abort.
             try:
                 self.send_json_response(408, {
                     'error': 'Request timeout while reading body'
                 })
             except (OSError, socket.timeout, TimeoutError, BrokenPipeError):
-                pass  # socket already gone — abort silently
+                pass
             return
 
         parsed_path = urlparse(self.path)
