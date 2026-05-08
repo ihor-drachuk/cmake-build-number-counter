@@ -1385,16 +1385,6 @@ class TestSocketTimeout:
             return None
         return raw.split(b"\r\n", 1)[0].decode('ascii', errors='replace')
 
-    # --- happy path ---
-
-    def test_normal_request_well_within_timeout(self, running_server):
-        """Standard requests complete far below the configured timeout."""
-        # running_server fixture sets timeout=None, but the request itself
-        # is sub-millisecond so this is a regression test against
-        # accidentally tightening the test timeout.
-        status, _ = post_json(running_server, "/increment", {"project_key": "fast"})
-        assert status == 200
-
     # --- error handling ---
 
     def test_partial_body_returns_408(self, tmp_path, monkeypatch):

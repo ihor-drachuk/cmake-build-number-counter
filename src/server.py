@@ -37,15 +37,14 @@ _BENIGN_NETWORK_ERRORS = (ConnectionError, socket.timeout, TimeoutError)
 class PooledHTTPServer(HTTPServer):
     """HTTP server with a fixed worker thread pool and bounded queue.
 
-    Architecture: serve_forever() runs in the main thread and only does
-    accept() + push the socket into a bounded Queue. N daemon worker
-    threads pull from the Queue and run finish_request().
-
     Hard cap on concurrent connections: max_workers in flight + max_workers
-    queued. Excess clients receive 503 Service Unavailable immediately
-    (best-effort raw write, then close). Workers are daemon threads — they
-    die with the process; we do not join them on shutdown to keep teardown
-    fast and to avoid hanging on a stuck request.
+    queued. Excess clients have their socket closed immediately on the
+    accept thread (no body, no I/O) — see _refuse_overloaded.
+
+    Workers are daemon threads; we never join them on shutdown so a
+    stuck handler cannot block server_close. See ADR-003 for the design
+    rationale (why not ThreadPoolExecutor, why bounded queue size =
+    max_workers, etc).
     """
 
     def __init__(self, server_address, RequestHandlerClass,
@@ -67,7 +66,6 @@ class PooledHTTPServer(HTTPServer):
             self._workers.append(t)
 
     def process_request(self, request, client_address):
-        """Hand the socket off to a worker, or refuse with 503."""
         try:
             self._work_queue.put_nowait((request, client_address))
         except queue.Full:
@@ -80,7 +78,6 @@ class PooledHTTPServer(HTTPServer):
         super().handle_error(request, client_address)
 
     def server_close(self):
-        """Close listening socket, signal workers, drain pending sockets."""
         super().server_close()
         self._shutdown_event.set()
         # Drain any sockets still in the queue — leaving them open would
@@ -116,15 +113,11 @@ class PooledHTTPServer(HTTPServer):
                     pass
 
     def _refuse_overloaded(self, request):
-        """Close the socket immediately on overload.
-
-        This runs on the accept (main) thread, so any synchronous I/O
-        here stalls accept() and defeats the bounded-queue design — even
-        a 100ms send timeout, multiplied across a sustained overload,
-        steals real capacity. We just shut the socket down. The client
-        sees an immediate RST/FIN, which existing rejection-tolerant
-        clients already handle (see ADR 001).
-        """
+        # Runs on the accept thread. Any synchronous I/O here stalls
+        # accept() and defeats the bounded-queue design — even a 100ms
+        # send timeout, multiplied across sustained overload, steals
+        # real capacity. We just close. Clients see RST/FIN; ADR-001
+        # documents this as the expected early-rejection behavior.
         try:
             self.shutdown_request(request)
         except OSError:
@@ -182,14 +175,10 @@ def load_json_file(filename, default):
 
 
 def save_json_file(filename, data):
-    """Save JSON file atomically and durably.
-
-    Atomic replace alone is not enough: it updates the directory entry
-    but the file's data blocks may still be in the OS page cache. After
-    a crash (host kernel panic, watchdog os._exit followed by container
-    SIGKILL of any in-flight writer) the dirent can point at zero-length
-    data. Fsync the data before swapping the dirent.
-    """
+    # fsync before os.replace: atomic replace covers the dirent but not
+    # the data blocks. Without fsync, a crash mid-write (kernel panic,
+    # watchdog os._exit + container SIGKILL) can leave the dirent
+    # pointing at zero-length data.
     temp_file = filename + ".tmp"
     with open(temp_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
@@ -199,13 +188,9 @@ def save_json_file(filename, data):
 
 
 def load_tokens():
-    """Load tokens with mtime-based caching. Thread-safe.
-
-    Returns a shallow COPY of the in-memory tokens dict. Returning a
-    copy (instead of the live cache reference) means any caller mutation
-    cannot poison the cache for other threads, and a concurrent cache
-    refresh cannot make a reader's iteration crash.
-    """
+    # Returns a shallow COPY (not the live _tokens_cache reference) so
+    # caller mutation cannot poison the cache for other threads, and a
+    # concurrent refresh cannot make a reader's iteration crash.
     global _tokens_cache, _tokens_cache_mtime
 
     if TOKENS_FILE is None or not os.path.exists(TOKENS_FILE):
@@ -265,12 +250,8 @@ def authenticate_request(handler, project_key):
 
 
 def _refresh_permanent_bans_from_disk():
-    """Reload banned_ips.json into the in-memory cache if mtime changed.
-
-    Performs the disk I/O under _bans_file_lock (NOT rate_lock) so a slow
-    disk cannot stall every concurrent request's rate-limit decision.
-    Returns the up-to-date set without holding any lock on return.
-    """
+    # Disk I/O under _bans_file_lock (NOT rate_lock) so a slow disk
+    # cannot stall every concurrent request's rate-limit decision.
     global permanent_bans, permanent_bans_mtime
 
     if DATA_DIR is None:
@@ -313,14 +294,10 @@ def _persist_permanent_ban(ip):
 
 
 def check_rate_limit(handler):
-    """Check rate limit for the client IP.
-
-    Returns True if request is allowed, False if rejected (429 sent).
-
-    Disk I/O for banned_ips.json never happens under rate_lock: a fresh
-    read is done before the lock if needed, and persisting a new ban
-    happens after the lock is released.
-    """
+    # Returns True if request is allowed, False if rejected (429 sent).
+    # Disk I/O for banned_ips.json never happens under rate_lock: a fresh
+    # read is done before the lock if needed, and persisting a new ban
+    # happens after the lock is released.
     if rate_limit <= 0:
         return True
 
@@ -482,17 +459,8 @@ class _SetResult:
 
 
 def increment_build_number(project_key, local_version=None):
-    """Atomically check approval/limit and increment counter.
-
-    All approval/limit checks and the increment happen within a single
-    file_lock critical section to avoid TOCTOU under multi-threading.
-
-    Returns:
-        _IncrementResult with status:
-            'ok'             -> build_number is the new value
-            'unapproved'     -> project is unknown and accept_unknown is False
-            'limit_reached'  -> new project would exceed max_projects
-    """
+    # Approval/limit checks live INSIDE file_lock together with the
+    # increment to avoid TOCTOU under the worker pool.
     with file_lock:
         build_numbers = load_json_file(BUILD_NUMBERS_FILE, {})
         is_new = project_key not in build_numbers
@@ -517,24 +485,8 @@ def increment_build_number(project_key, local_version=None):
 
 
 def set_build_number(project_key, version, force_unapproved=False):
-    """Atomically check approval and set counter to an exact value.
-
-    Args:
-        project_key: Project identifier (already validated by caller).
-        version: Non-negative integer to set the counter to.
-        force_unapproved: If True, bypass the approval check. Used by the
-            CLI --set-counter command, which is a local admin operation
-            that must work regardless of accept_unknown.
-
-    Returns:
-        _SetResult with status:
-            'ok'         -> build_number is the value that was written
-            'unapproved' -> project is unknown and (accept_unknown is False
-                            and force_unapproved is False)
-
-    Raises:
-        ValueError: If version is invalid (negative, non-int, or bool).
-    """
+    # force_unapproved=True is used by the --set-counter CLI: a local
+    # admin operation that must succeed regardless of accept_unknown.
     if not isinstance(version, int) or isinstance(version, bool) or version < 0:
         raise ValueError(f"version must be a non-negative integer, got {version!r}")
 
@@ -936,17 +888,9 @@ def _handle_list_tokens():
 
 
 def _watchdog_loop(port, interval, threshold, timeout):
-    """Daemon thread: poll /healthz, os._exit(1) on repeated failure.
-
-    Runs OUTSIDE the worker pool so a fully-saturated pool still trips
-    the watchdog (the GET /healthz attempt will time out or get a 503,
-    counting as a failure). On `threshold` consecutive failures the
-    process exits with code 1 — the container orchestrator (Docker
-    restart_policy, Railway, Kubernetes) restarts us.
-
-    Uses os._exit, not sys.exit: if workers are stuck inside I/O or a
-    finalizer deadlock, normal interpreter teardown would hang too.
-    """
+    # os._exit, not sys.exit: in the failure mode we are guarding against
+    # (workers stuck in I/O / deadlocked finalizer), normal teardown
+    # could itself hang. See ADR-003.
     failures = 0
     while True:
         time.sleep(interval)
@@ -965,7 +909,10 @@ def _watchdog_loop(port, interval, threshold, timeout):
             failures += 1
             print(f"[watchdog] /healthz returned {resp.status} ({failures}/{threshold})",
                   file=sys.stderr)
-        except Exception as e:
+        except (OSError, http.client.HTTPException, socket.timeout, TimeoutError) as e:
+            # Narrow except: anything else (NameError, AttributeError from a
+            # programming bug) propagates a real traceback instead of being
+            # masked as a failure-tick that slowly walks us toward os._exit.
             failures += 1
             print(f"[watchdog] /healthz error: {e} ({failures}/{threshold})",
                   file=sys.stderr)
@@ -1208,12 +1155,34 @@ def main():
         print(f"Authentication: enabled ({len(tokens)} token(s))")
     else:
         print("Authentication: disabled (no tokens configured)")
+
+    # Disk-fill DoS warning: with no project cap, accept-unknown ON, and
+    # no auth, anyone can spam project keys until the JSON file fills the
+    # disk. Per-IP rate limit slows it down but does not stop a botnet.
+    if max_projects == 0 and accept_unknown and not tokens:
+        print("WARNING: --max-projects 0 + --accept-unknown + no tokens is "
+              "vulnerable to disk-fill DoS via crafted project keys. "
+              "Set --max-projects, configure tokens, or restrict network access.",
+              file=sys.stderr)
+
     print(f"Press Ctrl+C to stop\n")
 
     if rate_limit > 0:
         _start_cleanup_timer()
 
     if args.watchdog:
+        # Watchdog probes 127.0.0.1. If the operator bound to a single
+        # non-loopback address, the watchdog will get connection-refused
+        # forever and kill the server in interval×failures seconds.
+        _LOOPBACK_HOSTS = {'0.0.0.0', '::', '127.0.0.1', '::1', 'localhost', ''}
+        if args.host not in _LOOPBACK_HOSTS:
+            print(f"WARNING: --watchdog probes 127.0.0.1 but --host is "
+                  f"'{args.host}'. The server is not reachable on loopback, "
+                  f"so the watchdog will trip in "
+                  f"{args.watchdog_interval * args.watchdog_failures}s and "
+                  f"kill the process. Bind to 0.0.0.0 or disable --watchdog.",
+                  file=sys.stderr)
+
         # Use the actual bound port, not args.port. With --port 0 the
         # kernel chose a free port and args.port is still 0, so probing
         # 127.0.0.1:0 would fail forever and kill the server in 30s.

@@ -67,6 +67,13 @@ set BUILD_SERVER_URL=http://your-server:8080      # Windows
 | `--watchdog-failures` | `3` | Consecutive failures before exit |
 | `--watchdog-timeout` | `5` | HTTP timeout per probe in seconds |
 
+> **Note:** The watchdog probes `127.0.0.1`. If you bind `--host` to a
+> single non-loopback address, the server is not reachable from the
+> watchdog's perspective and it will eventually call `os._exit(1)`. Bind
+> to `0.0.0.0` (the default), `::`, or include loopback in your bind
+> setup — or leave `--watchdog` off. The server prints a warning at
+> startup if it detects this combination.
+
 ### Concurrency Model
 
 The server uses a fixed pool of `--max-threads` daemon worker threads

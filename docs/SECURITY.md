@@ -78,3 +78,18 @@ python src/server.py --rate-limit 0
 - Restrict the approved projects list (don't use `--accept-unknown`)
 - Enable token authentication
 - Run the server behind a firewall or VPN
+
+## Footgun: disk-fill DoS
+
+The combination `--max-projects 0` (unlimited) + `--accept-unknown`
+(create projects on first request) + no tokens lets any unauthenticated
+caller spam crafted project keys (validated regex, up to 128 chars each,
+~140 bytes per entry in the JSON) until the disk fills. Per-IP rate
+limiting slows this down but does not stop a botnet.
+
+The server prints a stderr WARNING at startup when this combination is
+detected. To eliminate the risk, do at least one of:
+
+- Set a finite `--max-projects` (default 100)
+- Configure tokens via `--add-token`
+- Restrict network access (firewall, VPN, private network)
