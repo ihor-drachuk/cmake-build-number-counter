@@ -123,14 +123,34 @@ Why default OFF: tests and local development should not surprise-kill
 themselves on a transient network blip. Containers explicitly opt in
 via the Dockerfile `CMD`.
 
-### Periodic-task pattern inconsistency (rate-limit cleanup vs watchdog)
+### Rate-limit cleanup: lazy, not periodic
 
-Acknowledged: `_start_cleanup_timer` recurses through
-`threading.Timer`, while the watchdog is a `while True: time.sleep`
-daemon thread. Two patterns for the same shape of problem. We did not
-unify them in this series because the cleanup timer's
-backward-compat surface (it survives across `serve_forever` calls in
-tests) was not worth disturbing for a cosmetic win. Future work.
+The rate-limit state (`rate_tracker`, `temp_bans`) is cleaned
+opportunistically inside `check_rate_limit` rather than from a
+background thread:
+
+- The IP being checked has its own bucket purged (old timestamps
+  dropped, expired temp ban removed) on every request — this was
+  already happening pre-hardening for correctness.
+- Every `_RATE_SWEEP_EVERY` (256) allowed requests, a global
+  `cleanup_rate_data()` runs under `rate_lock` to evict dormant IPs.
+
+This removes the previous `_start_cleanup_timer` / `threading.Timer`
+recursion entirely. One fewer background thread, one fewer pattern
+in the codebase, and the behavior under load is unchanged: an active
+IP gets a fresh bucket each request, and idle IPs get evicted within
+the next 256 incoming requests. Under no traffic at all there are no
+dormant entries to begin with.
+
+### Watchdog uses `Event.wait`, not `time.sleep`
+
+The watchdog loop waits on a `threading.Event` (`stop_event.wait(interval)`)
+rather than `time.sleep(interval)`. Functionally equivalent on the
+happy path; the difference matters for shutdown and testing — setting
+the event wakes the loop immediately, so tests can stop the watchdog
+deterministically without monkeypatching `time.sleep`, and a future
+graceful-shutdown path can stop the thread without waiting up to
+`interval` seconds.
 
 ## Consequences
 

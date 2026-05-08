@@ -144,6 +144,12 @@ permanent_bans = set()        # in-memory cache of banned_ips.json
 permanent_bans_mtime = 0.0    # last known mtime of banned_ips.json
 rate_lock = threading.Lock()  # protects in-memory rate state only
 
+# Opportunistic global sweep: every Nth allowed request triggers a full
+# cleanup of stale rate_tracker entries and expired temp_bans. Avoids
+# unbounded growth from dormant IPs without a separate background thread.
+_RATE_SWEEP_EVERY = 256
+_rate_sweep_counter = 0
+
 # Separate lock for banned_ips.json disk I/O. Held while reading or
 # writing the file; never held while holding rate_lock (and vice versa)
 # so a slow disk cannot serialize all rate-limit decisions.
@@ -357,6 +363,12 @@ def check_rate_limit(handler: BaseHTTPRequestHandler) -> bool:
             _send_429_temporary(handler, ip, ban_duration)
         return False
 
+    global _rate_sweep_counter
+    _rate_sweep_counter += 1
+    if _rate_sweep_counter >= _RATE_SWEEP_EVERY:
+        _rate_sweep_counter = 0
+        cleanup_rate_data()
+
     return True
 
 
@@ -397,14 +409,6 @@ def cleanup_rate_data() -> None:
         ]
         for ip in expired:
             del temp_bans[ip]
-
-
-def _start_cleanup_timer() -> None:
-    """Start periodic cleanup of rate limiting data."""
-    cleanup_rate_data()
-    timer = threading.Timer(60.0, _start_cleanup_timer)
-    timer.daemon = True
-    timer.start()
 
 
 def validate_local_version(value: Any) -> Tuple[bool, Optional[str]]:
@@ -892,13 +896,15 @@ def _handle_list_tokens():
 
 
 def _watchdog_loop(port: int, interval: float, threshold: int,
-                   timeout: float) -> None:
+                   timeout: float,
+                   stop_event: Optional[threading.Event] = None) -> None:
     # os._exit, not sys.exit: in the failure mode we are guarding against
     # (workers stuck in I/O / deadlocked finalizer), normal teardown
     # could itself hang. See ADR-003.
+    if stop_event is None:
+        stop_event = threading.Event()
     failures = 0
-    while True:
-        time.sleep(interval)
+    while not stop_event.wait(interval):
         try:
             conn = http.client.HTTPConnection('127.0.0.1', port, timeout=timeout)
             try:
@@ -1171,9 +1177,6 @@ def main():
               file=sys.stderr)
 
     print(f"Press Ctrl+C to stop\n")
-
-    if rate_limit > 0:
-        _start_cleanup_timer()
 
     if args.watchdog:
         # Watchdog probes 127.0.0.1. If the operator bound to a single

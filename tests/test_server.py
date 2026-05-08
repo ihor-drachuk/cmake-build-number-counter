@@ -850,6 +850,41 @@ class TestRateLimiting:
         assert '1.2.3.4' not in server_module.temp_bans
         assert '5.6.7.8' in server_module.temp_bans
 
+    def test_opportunistic_sweep_purges_stale_ips(self, tmp_path, monkeypatch):
+        """check_rate_limit triggers cleanup_rate_data every _RATE_SWEEP_EVERY allowed requests."""
+        import server as server_module
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        try:
+            # Inject a stale IP into rate_tracker manually.
+            old = time.monotonic() - 120.0
+            with server_module.rate_lock:
+                server_module.rate_tracker['9.9.9.9'] = [old]
+
+            # Force-enable rate limiting (fixture default is 0).
+            monkeypatch.setattr(server_module, 'rate_limit', 1000)
+            # Lower the sweep threshold so we don't have to send 256 requests.
+            monkeypatch.setattr(server_module, '_RATE_SWEEP_EVERY', 3)
+            monkeypatch.setattr(server_module, '_rate_sweep_counter', 0)
+
+            for i in range(4):
+                status, _ = post_json(url, "/increment", {"project_key": f"opp-{i}"})
+                assert status == 200
+
+            assert '9.9.9.9' not in server_module.rate_tracker
+        finally:
+            _stop_server(httpd)
+
+    def test_no_background_cleanup_thread(self):
+        """No long-lived cleanup thread/timer should exist (lazy-cleanup design)."""
+        cleanup_threads = [
+            t for t in threading.enumerate()
+            if 'cleanup' in t.name.lower()
+        ]
+        assert cleanup_threads == [], (
+            f"unexpected cleanup thread(s): {[t.name for t in cleanup_threads]}"
+        )
+
     def test_ban_clears_tracker(self, rate_limited_server):
         """After banning, the IP's rate_tracker entry is removed."""
         import server as server_module
@@ -995,53 +1030,38 @@ class TestSetEndpoint:
         assert status == 400
 
 
-class _WatchdogStop(BaseException):
-    """Internal sentinel: clean unwind of the watchdog loop in tests."""
-
-
 class TestWatchdog:
     """In-process watchdog: poll /healthz, os._exit(1) on repeated failure.
 
     All tests stub out http.client.HTTPConnection and os._exit so they
     don't make real network calls and don't actually kill pytest.
+    A stop_event is passed into _watchdog_loop; the os._exit stub sets
+    it, so the loop unwinds cleanly after the simulated exit fires.
     """
 
-    def _patch_exit(self, monkeypatch, server_module):
-        """Replace os._exit with a recording stub; return the call list.
-
-        Also stubs time.sleep so it raises after the fake exit fires —
-        this is how we let the watchdog loop unwind without leaving the
-        thread running into pytest's teardown.
-        """
+    def _patch_exit(self, monkeypatch, server_module, stop_event):
+        """Replace os._exit with a recording stub that sets stop_event."""
         calls = []
-        triggered = threading.Event()
 
         def fake_exit(code):
             calls.append(code)
-            triggered.set()
-            # Returning normally lets the loop resume; the sleep stub
-            # below intercepts the next iteration.
+            stop_event.set()
 
         monkeypatch.setattr(server_module.os, '_exit', fake_exit)
-
-        original_sleep = server_module.time.sleep
-        def stop_after_exit(secs):
-            if triggered.is_set():
-                # Break the loop deterministically so the daemon thread
-                # exits cleanly and pytest's threadexception plugin
-                # doesn't flag it.
-                raise _WatchdogStop()
-            original_sleep(min(secs, 0.01))
-        monkeypatch.setattr(server_module.time, 'sleep', stop_after_exit)
         return calls
 
-    def _patch_httpconnection(self, monkeypatch, server_module, behaviors):
+    def _patch_httpconnection(self, monkeypatch, server_module, behaviors,
+                              stop_after=None, stop_event=None):
         """Stub http.client.HTTPConnection to return a sequence of fake responses.
 
         `behaviors` is a list of items consumed in order:
           - int N → respond with status N, body b''
           - Exception subclass → raise that exception in request()
         Once exhausted, behaviors[-1] repeats.
+
+        If stop_after is set and stop_event is provided, stop_event.set()
+        is called on the (stop_after+1)th request — this lets "no-exit"
+        tests bound iteration count deterministically.
         """
         idx = [0]
 
@@ -1057,6 +1077,8 @@ class TestWatchdog:
             def request(self, method, path):
                 i = min(idx[0], len(behaviors) - 1)
                 idx[0] += 1
+                if stop_after is not None and idx[0] >= stop_after and stop_event is not None:
+                    stop_event.set()
                 b = behaviors[i]
                 if isinstance(b, int):
                     self._next_status = b
@@ -1069,13 +1091,12 @@ class TestWatchdog:
 
         monkeypatch.setattr(server_module.http.client, 'HTTPConnection', FakeConn)
 
-    def _run_watchdog(self, server_module, *, threshold):
-        """Run watchdog in a thread, swallow _WatchdogStop on exit."""
+    def _run_watchdog(self, server_module, *, threshold, stop_event,
+                      interval=0):
+        """Run watchdog in a thread; assert it stops within the timeout."""
         def runner():
-            try:
-                server_module._watchdog_loop(8080, 0, threshold, 1)
-            except _WatchdogStop:
-                pass
+            server_module._watchdog_loop(8080, interval, threshold, 1,
+                                         stop_event=stop_event)
 
         t = threading.Thread(target=runner, daemon=True)
         t.start()
@@ -1087,56 +1108,48 @@ class TestWatchdog:
     def test_resets_failures_on_200(self, monkeypatch):
         """Sustained 200 responses → no exit."""
         import server as server_module
-        # Don't use _patch_exit here — we want sleep limited by iteration count,
-        # not by exit being triggered (which never happens in this test).
+        stop = threading.Event()
         calls = []
         monkeypatch.setattr(server_module.os, '_exit', lambda code: calls.append(code))
-        self._patch_httpconnection(monkeypatch, server_module, [200])
-
-        # Stop after a fixed number of iterations.
-        sleep_count = [0]
-        def limited_sleep(secs):
-            sleep_count[0] += 1
-            if sleep_count[0] >= 20:
-                raise _WatchdogStop
-        monkeypatch.setattr(server_module.time, 'sleep', limited_sleep)
-
-        try:
-            server_module._watchdog_loop(8080, 0, threshold=3, timeout=1)
-        except _WatchdogStop:
-            pass
+        self._patch_httpconnection(monkeypatch, server_module, [200],
+                                   stop_after=20, stop_event=stop)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         assert calls == []  # never tripped
 
     # --- error handling ---
 
     def test_exits_after_threshold_connection_refused(self, monkeypatch):
         import server as server_module
-        exit_calls = self._patch_exit(monkeypatch, server_module)
+        stop = threading.Event()
+        exit_calls = self._patch_exit(monkeypatch, server_module, stop)
         self._patch_httpconnection(monkeypatch, server_module,
                                    [ConnectionRefusedError("nope")])
-        self._run_watchdog(server_module, threshold=3)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         assert exit_calls == [1]
 
     def test_exits_on_503(self, monkeypatch):
         import server as server_module
-        exit_calls = self._patch_exit(monkeypatch, server_module)
+        stop = threading.Event()
+        exit_calls = self._patch_exit(monkeypatch, server_module, stop)
         self._patch_httpconnection(monkeypatch, server_module, [503])
-        self._run_watchdog(server_module, threshold=3)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         assert exit_calls == [1]
 
     def test_exits_on_500(self, monkeypatch):
         import server as server_module
-        exit_calls = self._patch_exit(monkeypatch, server_module)
+        stop = threading.Event()
+        exit_calls = self._patch_exit(monkeypatch, server_module, stop)
         self._patch_httpconnection(monkeypatch, server_module, [500])
-        self._run_watchdog(server_module, threshold=3)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         assert exit_calls == [1]
 
     def test_exits_on_socket_timeout(self, monkeypatch):
         import server as server_module
-        exit_calls = self._patch_exit(monkeypatch, server_module)
+        stop = threading.Event()
+        exit_calls = self._patch_exit(monkeypatch, server_module, stop)
         self._patch_httpconnection(monkeypatch, server_module,
                                    [socket.timeout("idle")])
-        self._run_watchdog(server_module, threshold=3)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         assert exit_calls == [1]
 
     # --- edge cases ---
@@ -1144,50 +1157,51 @@ class TestWatchdog:
     def test_recovers_after_intermittent_failure(self, monkeypatch):
         """fail, fail, ok, fail, fail → no exit (only 2 consecutive at end)."""
         import server as server_module
+        stop = threading.Event()
         calls = []
         monkeypatch.setattr(server_module.os, '_exit', lambda code: calls.append(code))
         self._patch_httpconnection(monkeypatch, server_module,
-                                   [503, 503, 200, 503, 503, 200])
-
-        sleep_count = [0]
-        def limited_sleep(secs):
-            sleep_count[0] += 1
-            if sleep_count[0] >= 10:
-                raise _WatchdogStop
-        monkeypatch.setattr(server_module.time, 'sleep', limited_sleep)
-
-        try:
-            server_module._watchdog_loop(8080, 0, threshold=3, timeout=1)
-        except _WatchdogStop:
-            pass
+                                   [503, 503, 200, 503, 503, 200],
+                                   stop_after=10, stop_event=stop)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         assert calls == []  # never reached 3 consecutive
 
     def test_failures_below_threshold_dont_exit(self, monkeypatch):
         """threshold=3, exactly 2 failures + ok → no exit."""
         import server as server_module
+        stop = threading.Event()
         calls = []
         monkeypatch.setattr(server_module.os, '_exit', lambda code: calls.append(code))
         self._patch_httpconnection(monkeypatch, server_module,
-                                   [503, 503, 200])
-
-        sleep_count = [0]
-        def limited_sleep(secs):
-            sleep_count[0] += 1
-            if sleep_count[0] >= 5:
-                raise _WatchdogStop
-        monkeypatch.setattr(server_module.time, 'sleep', limited_sleep)
-
-        try:
-            server_module._watchdog_loop(8080, 0, threshold=3, timeout=1)
-        except _WatchdogStop:
-            pass
+                                   [503, 503, 200],
+                                   stop_after=5, stop_event=stop)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         assert calls == []
+
+    def test_stop_event_unblocks_idle_wait(self, monkeypatch):
+        """Setting stop_event during interval wait must wake the loop promptly."""
+        import server as server_module
+        stop = threading.Event()
+        monkeypatch.setattr(server_module.os, '_exit', lambda code: None)
+        self._patch_httpconnection(monkeypatch, server_module, [200])
+
+        # interval=10s; if Event.wait works, set() should unblock it.
+        def runner():
+            server_module._watchdog_loop(8080, 10.0, 3, 1, stop_event=stop)
+
+        t = threading.Thread(target=runner, daemon=True)
+        t.start()
+        time.sleep(0.05)  # let it enter wait()
+        stop.set()
+        t.join(timeout=1.0)
+        assert not t.is_alive(), "stop_event did not interrupt the loop"
 
     def test_logs_to_stderr_on_failure(self, monkeypatch, capsys):
         import server as server_module
-        self._patch_exit(monkeypatch, server_module)
+        stop = threading.Event()
+        self._patch_exit(monkeypatch, server_module, stop)
         self._patch_httpconnection(monkeypatch, server_module, [503])
-        self._run_watchdog(server_module, threshold=3)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         err = capsys.readouterr().err
         assert "watchdog" in err
         assert "503" in err or "failure" in err.lower()
@@ -1197,6 +1211,7 @@ class TestWatchdog:
     def test_flushes_streams_before_exit(self, monkeypatch):
         """sys.stderr.flush and sys.stdout.flush are called before os._exit."""
         import server as server_module
+        stop = threading.Event()
         flush_calls = []
         original_stderr_flush = sys.stderr.flush
         original_stdout_flush = sys.stdout.flush
@@ -1208,13 +1223,12 @@ class TestWatchdog:
             flush_calls.append('stdout')
             original_stdout_flush()
 
-        # Patch flush methods on the actual sys streams used by the module.
         monkeypatch.setattr(server_module.sys.stderr, 'flush', stderr_flush)
         monkeypatch.setattr(server_module.sys.stdout, 'flush', stdout_flush)
 
-        self._patch_exit(monkeypatch, server_module)
+        self._patch_exit(monkeypatch, server_module, stop)
         self._patch_httpconnection(monkeypatch, server_module, [503])
-        self._run_watchdog(server_module, threshold=3)
+        self._run_watchdog(server_module, threshold=3, stop_event=stop)
         assert 'stderr' in flush_calls
         assert 'stdout' in flush_calls
 
