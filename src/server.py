@@ -165,7 +165,12 @@ rate_tracker = {}             # {ip: [monotonic_timestamps]}
 temp_bans = {}                # {ip: monotonic_expiry}
 permanent_bans = set()        # in-memory cache of banned_ips.json
 permanent_bans_mtime = 0.0    # last known mtime of banned_ips.json
-rate_lock = threading.Lock()  # separate from file_lock
+rate_lock = threading.Lock()  # protects in-memory rate state only
+
+# Separate lock for banned_ips.json disk I/O. Held while reading or
+# writing the file; never held while holding rate_lock (and vice versa)
+# so a slow disk cannot serialize all rate-limit decisions.
+_bans_file_lock = threading.Lock()
 
 # Tokens cache (mtime-invalidated). Keeps load_tokens() off the hot disk
 # I/O path on every authenticated request. Sentinel mtime -1.0 means
@@ -287,10 +292,62 @@ def authenticate_request(handler, project_key):
     return False, f'Token does not have access to project "{project_key}"'
 
 
+def _refresh_permanent_bans_from_disk():
+    """Reload banned_ips.json into the in-memory cache if mtime changed.
+
+    Performs the disk I/O under _bans_file_lock (NOT rate_lock) so a slow
+    disk cannot stall every concurrent request's rate-limit decision.
+    Returns the up-to-date set without holding any lock on return.
+    """
+    global permanent_bans, permanent_bans_mtime
+
+    if DATA_DIR is None:
+        return permanent_bans
+    ban_file = os.path.join(DATA_DIR, "banned_ips.json")
+
+    with _bans_file_lock:
+        try:
+            mtime = os.path.getmtime(ban_file)
+        except OSError:
+            return permanent_bans
+        if mtime == permanent_bans_mtime:
+            return permanent_bans
+        data = load_json_file(ban_file, {"banned": {}})
+        new_set = set(data.get("banned", {}).keys())
+        permanent_bans = new_set
+        permanent_bans_mtime = mtime
+        return new_set
+
+
+def _persist_permanent_ban(ip):
+    """Append `ip` to banned_ips.json. Called WITHOUT rate_lock held."""
+    global permanent_bans_mtime
+
+    if DATA_DIR is None:
+        return
+    ban_file = os.path.join(DATA_DIR, "banned_ips.json")
+
+    with _bans_file_lock:
+        data = load_json_file(ban_file, {"banned": {}})
+        data["banned"][ip] = {
+            "banned_at": datetime.now(timezone.utc).isoformat(),
+            "reason": f"Rate limit exceeded ({rate_limit} req/min)",
+        }
+        save_json_file(ban_file, data)
+        try:
+            permanent_bans_mtime = os.path.getmtime(ban_file)
+        except OSError:
+            pass
+
+
 def check_rate_limit(handler):
     """Check rate limit for the client IP.
 
     Returns True if request is allowed, False if rejected (429 sent).
+
+    Disk I/O for banned_ips.json never happens under rate_lock: a fresh
+    read is done before the lock if needed, and persisting a new ban
+    happens after the lock is released.
     """
     if rate_limit <= 0:
         return True
@@ -298,107 +355,76 @@ def check_rate_limit(handler):
     ip = handler.client_address[0]
     now = time.monotonic()
 
+    # If permanent bans are in use, refresh the cache OUTSIDE rate_lock.
+    # The mtime check inside _refresh_permanent_bans_from_disk is cheap
+    # when nothing changed (single os.stat).
+    if ban_permanent:
+        _refresh_permanent_bans_from_disk()
+
+    persist_after = False  # set True if we decide to persist a new ban
+
     with rate_lock:
-        # 1. Check permanent ban
-        if ban_permanent and _is_permanently_banned(ip):
-            handler.send_json_response(429, {
-                'error': 'Permanently banned due to rate limit violation',
-                'ban_type': 'permanent',
-                'ip': ip,
-            })
+        if ban_permanent and ip in permanent_bans:
+            _send_429_permanent(handler, ip)
             return False
 
-        # 2. Check temporary ban
         if not ban_permanent and ip in temp_bans:
             expiry = temp_bans[ip]
             if now < expiry:
-                remaining = int(expiry - now)
-                handler.send_json_response(429, {
-                    'error': 'Temporarily banned due to rate limit violation',
-                    'ban_type': 'temporary',
-                    'retry_after_seconds': remaining,
-                    'ip': ip,
-                })
+                _send_429_temporary(handler, ip, int(expiry - now))
                 return False
             else:
                 del temp_bans[ip]
 
-        # 3. Sliding window check
         timestamps = rate_tracker.get(ip, [])
         cutoff = now - 60.0
         while timestamps and timestamps[0] < cutoff:
             timestamps.pop(0)
 
         if len(timestamps) >= rate_limit:
-            _ban_ip(ip, now)
+            # Mutate in-memory state under the lock; persist after release.
             if ban_permanent:
-                handler.send_json_response(429, {
-                    'error': 'Permanently banned due to rate limit violation',
-                    'ban_type': 'permanent',
-                    'ip': ip,
-                })
+                permanent_bans.add(ip)
+                persist_after = True
+                print(f"Permanently banned IP: {ip}")
             else:
-                handler.send_json_response(429, {
-                    'error': 'Temporarily banned due to rate limit violation',
-                    'ban_type': 'temporary',
-                    'retry_after_seconds': ban_duration,
-                    'ip': ip,
-                })
-            return False
+                temp_bans[ip] = now + ban_duration
+                print(f"Temporarily banned IP: {ip} for {ban_duration}s")
+            rate_tracker.pop(ip, None)
+            response_pending = True
+        else:
+            timestamps.append(now)
+            rate_tracker[ip] = timestamps
+            response_pending = False
 
-        # 4. Record this request
-        timestamps.append(now)
-        rate_tracker[ip] = timestamps
+    if persist_after:
+        _persist_permanent_ban(ip)
+
+    if response_pending:
+        if ban_permanent:
+            _send_429_permanent(handler, ip)
+        else:
+            _send_429_temporary(handler, ip, ban_duration)
+        return False
 
     return True
 
 
-def _ban_ip(ip, now):
-    """Ban an IP address. Called under rate_lock."""
-    if ban_permanent:
-        permanent_bans.add(ip)
-        _save_permanent_bans(ip)
-        print(f"Permanently banned IP: {ip}")
-    else:
-        temp_bans[ip] = now + ban_duration
-        print(f"Temporarily banned IP: {ip} for {ban_duration}s")
-    rate_tracker.pop(ip, None)
+def _send_429_permanent(handler, ip):
+    handler.send_json_response(429, {
+        'error': 'Permanently banned due to rate limit violation',
+        'ban_type': 'permanent',
+        'ip': ip,
+    })
 
 
-def _is_permanently_banned(ip):
-    """Check if IP is permanently banned. Refreshes cache if file changed."""
-    global permanent_bans, permanent_bans_mtime
-
-    if ip in permanent_bans:
-        return True
-
-    ban_file = os.path.join(DATA_DIR, "banned_ips.json")
-    try:
-        mtime = os.path.getmtime(ban_file)
-        if mtime != permanent_bans_mtime:
-            data = load_json_file(ban_file, {"banned": {}})
-            permanent_bans = set(data.get("banned", {}).keys())
-            permanent_bans_mtime = mtime
-    except OSError:
-        pass
-
-    return ip in permanent_bans
-
-
-def _save_permanent_bans(ip):
-    """Save permanent ban to file. Called under rate_lock."""
-    global permanent_bans_mtime
-    ban_file = os.path.join(DATA_DIR, "banned_ips.json")
-    data = load_json_file(ban_file, {"banned": {}})
-    data["banned"][ip] = {
-        "banned_at": datetime.now(timezone.utc).isoformat(),
-        "reason": f"Rate limit exceeded ({rate_limit} req/min)",
-    }
-    save_json_file(ban_file, data)
-    try:
-        permanent_bans_mtime = os.path.getmtime(ban_file)
-    except OSError:
-        pass
+def _send_429_temporary(handler, ip, retry_after_seconds):
+    handler.send_json_response(429, {
+        'error': 'Temporarily banned due to rate limit violation',
+        'ban_type': 'temporary',
+        'retry_after_seconds': retry_after_seconds,
+        'ip': ip,
+    })
 
 
 def cleanup_rate_data():
