@@ -21,7 +21,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 from validation import validate_project_key
 
@@ -162,7 +162,7 @@ class _BodyTooLarge(Exception):
         self.size = size
 
 
-def load_json_file(filename, default):
+def load_json_file(filename: str, default: Any) -> Any:
     """Load JSON file with error handling."""
     if not os.path.exists(filename):
         return default
@@ -174,7 +174,7 @@ def load_json_file(filename, default):
         return default
 
 
-def save_json_file(filename, data):
+def save_json_file(filename: str, data: Any) -> None:
     # fsync before os.replace: atomic replace covers the dirent but not
     # the data blocks. Without fsync, a crash mid-write (kernel panic,
     # watchdog os._exit + container SIGKILL) can leave the dirent
@@ -187,7 +187,7 @@ def save_json_file(filename, data):
     os.replace(temp_file, filename)
 
 
-def load_tokens():
+def load_tokens() -> Dict[str, Any]:
     # Returns a shallow COPY (not the live _tokens_cache reference) so
     # caller mutation cannot poison the cache for other threads, and a
     # concurrent refresh cannot make a reader's iteration crash.
@@ -214,7 +214,8 @@ def load_tokens():
         return dict(_tokens_cache)
 
 
-def authenticate_request(handler, project_key):
+def authenticate_request(handler: BaseHTTPRequestHandler,
+                         project_key: str) -> Tuple[bool, Optional[str]]:
     """
     Validate Authorization header against tokens.json.
 
@@ -249,7 +250,7 @@ def authenticate_request(handler, project_key):
     return False, f'Token does not have access to project "{project_key}"'
 
 
-def _refresh_permanent_bans_from_disk():
+def _refresh_permanent_bans_from_disk() -> set:
     # Disk I/O under _bans_file_lock (NOT rate_lock) so a slow disk
     # cannot stall every concurrent request's rate-limit decision.
     global permanent_bans, permanent_bans_mtime
@@ -272,7 +273,7 @@ def _refresh_permanent_bans_from_disk():
         return new_set
 
 
-def _persist_permanent_ban(ip):
+def _persist_permanent_ban(ip: str) -> None:
     """Append `ip` to banned_ips.json. Called WITHOUT rate_lock held."""
     global permanent_bans_mtime
 
@@ -293,7 +294,7 @@ def _persist_permanent_ban(ip):
             pass
 
 
-def check_rate_limit(handler):
+def check_rate_limit(handler: BaseHTTPRequestHandler) -> bool:
     # Returns True if request is allowed, False if rejected (429 sent).
     # Disk I/O for banned_ips.json never happens under rate_lock: a fresh
     # read is done before the lock if needed, and persisting a new ban
@@ -359,7 +360,7 @@ def check_rate_limit(handler):
     return True
 
 
-def _send_429_permanent(handler, ip):
+def _send_429_permanent(handler: BaseHTTPRequestHandler, ip: str) -> None:
     handler.send_json_response(429, {
         'error': 'Permanently banned due to rate limit violation',
         'ban_type': 'permanent',
@@ -367,7 +368,8 @@ def _send_429_permanent(handler, ip):
     })
 
 
-def _send_429_temporary(handler, ip, retry_after_seconds):
+def _send_429_temporary(handler: BaseHTTPRequestHandler, ip: str,
+                        retry_after_seconds: int) -> None:
     handler.send_json_response(429, {
         'error': 'Temporarily banned due to rate limit violation',
         'ban_type': 'temporary',
@@ -376,7 +378,7 @@ def _send_429_temporary(handler, ip, retry_after_seconds):
     })
 
 
-def cleanup_rate_data():
+def cleanup_rate_data() -> None:
     """Remove stale entries from rate_tracker and expired temp bans."""
     with rate_lock:
         now = time.monotonic()
@@ -397,7 +399,7 @@ def cleanup_rate_data():
             del temp_bans[ip]
 
 
-def _start_cleanup_timer():
+def _start_cleanup_timer() -> None:
     """Start periodic cleanup of rate limiting data."""
     cleanup_rate_data()
     timer = threading.Timer(60.0, _start_cleanup_timer)
@@ -405,7 +407,7 @@ def _start_cleanup_timer():
     timer.start()
 
 
-def validate_local_version(value):
+def validate_local_version(value: Any) -> Tuple[bool, Optional[str]]:
     """Validate local_version parameter.
 
     Returns:
@@ -420,7 +422,7 @@ def validate_local_version(value):
     return True, None
 
 
-def validate_version(value):
+def validate_version(value: Any) -> Tuple[bool, Optional[str]]:
     """Validate version parameter for force-set.
 
     Returns:
@@ -458,7 +460,8 @@ class _SetResult:
     build_number: Optional[int] = None
 
 
-def increment_build_number(project_key, local_version=None):
+def increment_build_number(project_key: str,
+                           local_version: Optional[int] = None) -> _IncrementResult:
     # Approval/limit checks live INSIDE file_lock together with the
     # increment to avoid TOCTOU under the worker pool.
     with file_lock:
@@ -484,7 +487,8 @@ def increment_build_number(project_key, local_version=None):
         return _IncrementResult(status=_IncrementStatus.OK, build_number=new_number)
 
 
-def set_build_number(project_key, version, force_unapproved=False):
+def set_build_number(project_key: str, version: int,
+                     force_unapproved: bool = False) -> _SetResult:
     # force_unapproved=True is used by the --set-counter CLI: a local
     # admin operation that must succeed regardless of accept_unknown.
     if not isinstance(version, int) or isinstance(version, bool) or version < 0:
@@ -792,7 +796,7 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
             })
 
 
-def init_data_dir(data_dir):
+def init_data_dir(data_dir: str) -> None:
     """Initialize data directory, file paths, and reset module caches."""
     global DATA_DIR, BUILD_NUMBERS_FILE, TOKENS_FILE
     global _tokens_cache, _tokens_cache_mtime
@@ -887,7 +891,8 @@ def _handle_list_tokens():
         print(f"{name:<20} {prefix:<14} {admin:<7} {projects:<30} {created}")
 
 
-def _watchdog_loop(port, interval, threshold, timeout):
+def _watchdog_loop(port: int, interval: float, threshold: int,
+                   timeout: float) -> None:
     # os._exit, not sys.exit: in the failure mode we are guarding against
     # (workers stuck in I/O / deadlocked finalizer), normal teardown
     # could itself hang. See ADR-003.
