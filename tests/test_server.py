@@ -1,5 +1,7 @@
 import http.client
 import json
+import os
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -290,6 +292,155 @@ class TestTokenAuth:
         result = server_module.load_tokens()
         assert "abc123" in result
         assert result["abc123"]["name"] == "t"
+
+
+class TestTokensCache:
+    """mtime-based cache of tokens.json: skip disk I/O when file unchanged."""
+
+    def _write_tokens(self, server_module, payload):
+        """Atomic-write tokens.json so mtime updates reliably."""
+        tmp = server_module.TOKENS_FILE + ".tmp"
+        with open(tmp, 'w') as f:
+            json.dump(payload, f)
+        os.replace(tmp, server_module.TOKENS_FILE)
+
+    # --- happy path ---
+
+    def test_cache_loads_on_first_call(self, tmp_path):
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "data"))
+        self._write_tokens(server_module, {"tokens": {"k": {"name": "t"}}})
+        result = server_module.load_tokens()
+        assert "k" in result
+        assert server_module._tokens_cache_mtime > 0
+
+    def test_cache_returns_same_object_on_unchanged_mtime(self, tmp_path, monkeypatch):
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "data"))
+        self._write_tokens(server_module, {"tokens": {"k": {"name": "t"}}})
+
+        calls = []
+        original = server_module.load_json_file
+
+        def counting(filename, default):
+            if filename == server_module.TOKENS_FILE:
+                calls.append(filename)
+            return original(filename, default)
+        monkeypatch.setattr(server_module, 'load_json_file', counting)
+
+        first = server_module.load_tokens()
+        for _ in range(10):
+            again = server_module.load_tokens()
+            assert again is first  # same dict object — cache hit
+        assert len(calls) == 1, f"expected 1 disk read, got {len(calls)}"
+
+    # --- error handling ---
+
+    def test_cache_returns_empty_when_file_missing(self, tmp_path):
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "data"))
+        # No tokens.json written
+        assert server_module.load_tokens() == {}
+
+    def test_cache_handles_file_disappearing(self, tmp_path):
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "data"))
+        self._write_tokens(server_module, {"tokens": {"k": {"name": "t"}}})
+        assert "k" in server_module.load_tokens()
+        os.remove(server_module.TOKENS_FILE)
+        assert server_module.load_tokens() == {}
+        assert server_module._tokens_cache_mtime == -1.0
+
+    def test_cache_handles_corrupted_json(self, tmp_path):
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "data"))
+        with open(server_module.TOKENS_FILE, 'w') as f:
+            f.write("{not valid json")
+        # load_json_file logs warning and returns {} → cache stores {}
+        assert server_module.load_tokens() == {}
+
+    # --- edge cases ---
+
+    def test_cache_invalidated_on_mtime_change(self, tmp_path):
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "data"))
+        self._write_tokens(server_module, {"tokens": {"old": {"name": "old"}}})
+        first = server_module.load_tokens()
+        assert "old" in first
+
+        # Bump mtime by sleeping enough to overcome FS resolution
+        time.sleep(0.05)
+        self._write_tokens(server_module, {"tokens": {"new": {"name": "new"}}})
+
+        second = server_module.load_tokens()
+        assert "new" in second
+        assert "old" not in second
+
+    def test_init_data_dir_resets_cache(self, tmp_path):
+        import server as server_module
+        server_module.init_data_dir(str(tmp_path / "first"))
+        self._write_tokens(server_module, {"tokens": {"k": {"name": "t"}}})
+        assert "k" in server_module.load_tokens()
+
+        # Move to a fresh data dir — cache must reset, otherwise we'd
+        # still see the stale token from the previous TOKENS_FILE.
+        server_module.init_data_dir(str(tmp_path / "second"))
+        assert server_module._tokens_cache == {}
+        assert server_module._tokens_cache_mtime == -1.0
+        assert server_module.load_tokens() == {}
+
+    # --- tricky-timed ---
+
+    def test_concurrent_cache_reads_no_corruption(self, tmp_path):
+        import server as server_module
+        import concurrent.futures
+
+        server_module.init_data_dir(str(tmp_path / "data"))
+        self._write_tokens(server_module, {
+            "tokens": {f"tok{i}": {"name": f"n{i}"} for i in range(10)}
+        })
+
+        def reader():
+            tokens = server_module.load_tokens()
+            return len(tokens) == 10 and all(f"tok{i}" in tokens for i in range(10))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
+            results = list(ex.map(lambda _: reader(), range(100)))
+        assert all(results)
+
+    def test_concurrent_cache_invalidation_no_500(self, tmp_path):
+        """Reader threads tolerate a writer atomically replacing the file."""
+        import server as server_module
+        import concurrent.futures
+
+        server_module.init_data_dir(str(tmp_path / "data"))
+        self._write_tokens(server_module, {"tokens": {"v1": {"name": "v1"}}})
+
+        stop = threading.Event()
+
+        def writer():
+            i = 0
+            while not stop.is_set():
+                self._write_tokens(server_module,
+                                   {"tokens": {f"v{i}": {"name": f"v{i}"}}})
+                i += 1
+                time.sleep(0.005)
+
+        writer_thread = threading.Thread(target=writer, daemon=True)
+        writer_thread.start()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+                # Each reader just needs to see *some* valid dict — any
+                # transient state is acceptable, partial / corrupted is not.
+                for _ in range(200):
+                    fut = ex.submit(server_module.load_tokens)
+                    tokens = fut.result(timeout=2.0)
+                    assert isinstance(tokens, dict)
+                    for v in tokens.values():
+                        assert "name" in v
+        finally:
+            stop.set()
+            writer_thread.join(timeout=2.0)
 
 
 class TestServerAuth:

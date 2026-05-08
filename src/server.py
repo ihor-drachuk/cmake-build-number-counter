@@ -51,6 +51,13 @@ permanent_bans = set()        # in-memory cache of banned_ips.json
 permanent_bans_mtime = 0.0    # last known mtime of banned_ips.json
 rate_lock = threading.Lock()  # separate from file_lock
 
+# Tokens cache (mtime-invalidated). Keeps load_tokens() off the hot disk
+# I/O path on every authenticated request. Sentinel mtime -1.0 means
+# "cache empty / file absent on last check".
+_tokens_cache = {}
+_tokens_cache_mtime = -1.0
+_tokens_cache_lock = threading.Lock()
+
 
 class _BodyTooLarge(Exception):
     def __init__(self, size):
@@ -96,9 +103,33 @@ def is_project_limit_reached():
 
 
 def load_tokens():
-    """Load tokens from tokens.json. Returns dict of token_value -> metadata."""
-    data = load_json_file(TOKENS_FILE, {})
-    return data.get("tokens", {})
+    """Load tokens with mtime-based caching. Thread-safe.
+
+    Returns the in-memory tokens dict (token_value -> metadata) without
+    touching the disk when tokens.json mtime has not changed since the
+    last successful load.
+    """
+    global _tokens_cache, _tokens_cache_mtime
+
+    if TOKENS_FILE is None or not os.path.exists(TOKENS_FILE):
+        with _tokens_cache_lock:
+            if _tokens_cache_mtime != -1.0:
+                _tokens_cache = {}
+                _tokens_cache_mtime = -1.0
+            return _tokens_cache
+
+    try:
+        mtime = os.path.getmtime(TOKENS_FILE)
+    except OSError:
+        with _tokens_cache_lock:
+            return _tokens_cache
+
+    with _tokens_cache_lock:
+        if mtime != _tokens_cache_mtime:
+            data = load_json_file(TOKENS_FILE, {})
+            _tokens_cache = data.get("tokens", {})
+            _tokens_cache_mtime = mtime
+        return _tokens_cache
 
 
 def authenticate_request(handler, project_key):
@@ -604,12 +635,18 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
 
 
 def init_data_dir(data_dir):
-    """Initialize data directory and build numbers file."""
+    """Initialize data directory, file paths, and reset module caches."""
     global DATA_DIR, BUILD_NUMBERS_FILE, TOKENS_FILE
+    global _tokens_cache, _tokens_cache_mtime
     DATA_DIR = data_dir
     BUILD_NUMBERS_FILE = os.path.join(DATA_DIR, "build_numbers.json")
     TOKENS_FILE = os.path.join(DATA_DIR, "tokens.json")
     os.makedirs(DATA_DIR, exist_ok=True)
+    # Caches are file-path-bound; reset whenever paths change (e.g. test
+    # fixtures that share the module across multiple tmp_path dirs).
+    with _tokens_cache_lock:
+        _tokens_cache = {}
+        _tokens_cache_mtime = -1.0
 
 
 def _handle_add_token(args):
