@@ -7,6 +7,7 @@ Provides atomic increment operations with persistent storage.
 """
 
 import fnmatch
+import http.client
 import json
 import argparse
 import os
@@ -878,6 +879,49 @@ def _handle_list_tokens():
         print(f"{name:<20} {prefix:<14} {admin:<7} {projects:<30} {created}")
 
 
+def _watchdog_loop(port, interval, threshold, timeout):
+    """Daemon thread: poll /healthz, os._exit(1) on repeated failure.
+
+    Runs OUTSIDE the worker pool so a fully-saturated pool still trips
+    the watchdog (the GET /healthz attempt will time out or get a 503,
+    counting as a failure). On `threshold` consecutive failures the
+    process exits with code 1 — the container orchestrator (Docker
+    restart_policy, Railway, Kubernetes) restarts us.
+
+    Uses os._exit, not sys.exit: if workers are stuck inside I/O or a
+    finalizer deadlock, normal interpreter teardown would hang too.
+    """
+    failures = 0
+    while True:
+        time.sleep(interval)
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', port, timeout=timeout)
+            try:
+                conn.request('GET', '/healthz')
+                resp = conn.getresponse()
+                resp.read()
+                ok = (resp.status == 200)
+            finally:
+                conn.close()
+            if ok:
+                failures = 0
+                continue
+            failures += 1
+            print(f"[watchdog] /healthz returned {resp.status} ({failures}/{threshold})",
+                  file=sys.stderr)
+        except Exception as e:
+            failures += 1
+            print(f"[watchdog] /healthz error: {e} ({failures}/{threshold})",
+                  file=sys.stderr)
+
+        if failures >= threshold:
+            print("[watchdog] failure threshold reached, exiting via os._exit(1)",
+                  file=sys.stderr)
+            sys.stderr.flush()
+            sys.stdout.flush()
+            os._exit(1)
+
+
 def main():
     """Main server entry point."""
     parser = argparse.ArgumentParser(
@@ -947,6 +991,34 @@ def main():
         help='Use permanent bans (persisted to banned_ips.json) instead of temporary.'
     )
 
+    parser.add_argument(
+        '--watchdog',
+        action='store_true',
+        help='Enable in-process watchdog: poll GET /healthz; on repeated failure '
+             'exit with code 1 so the container orchestrator restarts the process.'
+    )
+    parser.add_argument(
+        '--watchdog-interval',
+        type=int,
+        default=10,
+        metavar='SECS',
+        help='Seconds between watchdog probes (default: 10).'
+    )
+    parser.add_argument(
+        '--watchdog-failures',
+        type=int,
+        default=3,
+        metavar='N',
+        help='Consecutive failures before os._exit(1) (default: 3).'
+    )
+    parser.add_argument(
+        '--watchdog-timeout',
+        type=int,
+        default=5,
+        metavar='SECS',
+        help='Per-probe HTTP client timeout in seconds (default: 5).'
+    )
+
     counter_group = parser.add_argument_group('counter management')
     counter_group.add_argument('--set-counter', action='store_true',
                                help='Set a project counter to a specific value and exit (no server started)')
@@ -981,6 +1053,12 @@ def main():
         parser.error("--rate-limit must be >= 0")
     if args.ban_duration < 1:
         parser.error("--ban-duration must be >= 1")
+    if args.watchdog_interval < 1:
+        parser.error("--watchdog-interval must be >= 1")
+    if args.watchdog_failures < 1:
+        parser.error("--watchdog-failures must be >= 1")
+    if args.watchdog_timeout < 1:
+        parser.error("--watchdog-timeout must be >= 1")
 
     global accept_unknown, max_body_size, max_projects
     global rate_limit, ban_duration, ban_permanent
@@ -1053,6 +1131,11 @@ def main():
     print(f"Max projects: {'unlimited' if max_projects == 0 else max_projects}"
           f"{' (only enforced with --accept-unknown)' if max_projects > 0 else ''}")
     print(f"Worker threads: {args.max_threads} (queue: {args.max_threads})")
+    if args.watchdog:
+        print(f"Watchdog: enabled (interval={args.watchdog_interval}s, "
+              f"failures={args.watchdog_failures}, timeout={args.watchdog_timeout}s)")
+    else:
+        print("Watchdog: disabled")
     if rate_limit > 0:
         ban_info = "permanent" if ban_permanent else f"temporary ({ban_duration}s)"
         print(f"Rate limit: {rate_limit} req/min per IP, ban: {ban_info}")
@@ -1067,6 +1150,16 @@ def main():
 
     if rate_limit > 0:
         _start_cleanup_timer()
+
+    if args.watchdog:
+        watchdog_thread = threading.Thread(
+            target=_watchdog_loop,
+            args=(args.port, args.watchdog_interval,
+                  args.watchdog_failures, args.watchdog_timeout),
+            name='watchdog',
+            daemon=True,
+        )
+        watchdog_thread.start()
 
     try:
         server.serve_forever()
