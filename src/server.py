@@ -928,11 +928,17 @@ def main():
         description='Build Number Counter Server',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    # PaaS platforms (Railway, Heroku, Fly.io) inject the desired listen
+    # port via $PORT. Honor it as the default when --port is not given.
+    try:
+        default_port = int(os.environ.get('PORT', '8080'))
+    except ValueError:
+        default_port = 8080
     parser.add_argument(
         '--port',
         type=int,
-        default=8080,
-        help='Port to listen on (default: 8080)'
+        default=default_port,
+        help=f'Port to listen on (default: {default_port}; honors $PORT env var)'
     )
     parser.add_argument(
         '--host',
