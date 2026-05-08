@@ -53,6 +53,11 @@ class PooledHTTPServer(HTTPServer):
         self._work_queue = queue.Queue(maxsize=self._max_workers)
         self._shutdown_event = threading.Event()
         self._workers = []
+        # Update process-wide start time so /healthz reports uptime
+        # relative to the most recent server instance (in tests there
+        # may be many sequential instances on different ports).
+        global _server_start_time
+        _server_start_time = time.monotonic()
         for i in range(self._max_workers):
             t = threading.Thread(
                 target=self._worker_loop,
@@ -167,6 +172,10 @@ rate_lock = threading.Lock()  # separate from file_lock
 _tokens_cache = {}
 _tokens_cache_mtime = -1.0
 _tokens_cache_lock = threading.Lock()
+
+# Server lifecycle: monotonic timestamp when serve_forever() started.
+# Read by GET /healthz to report uptime.
+_server_start_time = 0.0
 
 
 class _BodyTooLarge(Exception):
@@ -740,16 +749,32 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         """Handle GET requests (status/info only)."""
+        parsed_path = urlparse(self.path)
+
+        # /healthz bypasses rate limit so the watchdog (or external probe)
+        # cannot accidentally ban itself, and stays cheap to call.
+        if parsed_path.path == '/healthz':
+            try:
+                self.send_json_response(200, {
+                    'status': 'ok',
+                    'workers': self.server._max_workers,
+                    'queue_depth': self.server._work_queue.qsize(),
+                    'uptime_seconds': int(time.monotonic() - _server_start_time),
+                })
+            except (OSError, socket.timeout, TimeoutError, BrokenPipeError):
+                pass
+            return
+
         if not check_rate_limit(self):
             return
-        parsed_path = urlparse(self.path)
 
         if parsed_path.path == '/':
             self.send_json_response(200, {
                 'service': 'Build Number Counter Server',
                 'endpoints': {
                     '/increment': 'POST with JSON body: {"project_key": "key", "local_version": N (optional)}',
-                    '/set': 'POST with JSON body: {"project_key": "key", "version": N}'
+                    '/set': 'POST with JSON body: {"project_key": "key", "version": N}',
+                    '/healthz': 'GET — liveness probe (no auth, no rate limit)'
                 }
             })
         else:

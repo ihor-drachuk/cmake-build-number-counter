@@ -978,6 +978,76 @@ class TestSetEndpoint:
         assert status == 400
 
 
+class TestHealthz:
+    """GET /healthz — liveness probe, no auth, no rate limit."""
+
+    # --- happy path ---
+
+    def test_healthz_returns_200_with_payload(self, running_server):
+        status, data = get_json(running_server, "/healthz")
+        assert status == 200
+        assert data["status"] == "ok"
+        assert isinstance(data["workers"], int)
+        assert data["workers"] >= 1
+        assert isinstance(data["queue_depth"], int)
+        assert data["queue_depth"] >= 0
+        assert isinstance(data["uptime_seconds"], int)
+        assert data["uptime_seconds"] >= 0
+
+    def test_healthz_uptime_grows(self, running_server):
+        _, first = get_json(running_server, "/healthz")
+        time.sleep(1.1)
+        _, second = get_json(running_server, "/healthz")
+        assert second["uptime_seconds"] >= first["uptime_seconds"] + 1
+
+    # --- error handling ---
+
+    def test_healthz_post_is_404(self, running_server):
+        status, _ = post_json(running_server, "/healthz", {})
+        assert status == 404
+
+    # --- edge cases ---
+
+    def test_healthz_bypasses_rate_limit(self, rate_limited_server):
+        """rate_limit=3 in fixture; 10× /healthz should not ban the IP."""
+        for _ in range(10):
+            status, data = get_json(rate_limited_server, "/healthz")
+            assert status == 200
+        # And a regular request still works (bucket not consumed by /healthz).
+        status, data = post_json(rate_limited_server, "/increment",
+                                 {"project_key": "after-healthz"})
+        assert status == 200
+
+    def test_healthz_works_under_partial_load(self, tmp_path, monkeypatch):
+        """One worker busy, /healthz still served by another."""
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=2)
+        try:
+            slow = _open_slow_socket(url)
+            time.sleep(0.1)
+            try:
+                status, data = get_json(url, "/healthz")
+                assert status == 200
+                assert data["status"] == "ok"
+            finally:
+                slow.close()
+        finally:
+            _stop_server(httpd)
+
+    # --- tricky-timed ---
+
+    def test_healthz_workers_count_correct(self, tmp_path, monkeypatch):
+        """healthz reports the configured worker count."""
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True, max_workers=7)
+        try:
+            status, data = get_json(url, "/healthz")
+            assert status == 200
+            assert data["workers"] == 7
+            # queue_depth is 0 when there is no other traffic.
+            assert data["queue_depth"] == 0
+        finally:
+            _stop_server(httpd)
+
+
 class TestSocketTimeout:
     """Socket-level timeout via BuildNumberHandler.timeout — Slowloris defense."""
 
