@@ -6,6 +6,7 @@ A simple HTTP server that manages build numbers for multiple projects.
 Provides atomic increment operations with persistent storage.
 """
 
+import enum
 import fnmatch
 import http.client
 import json
@@ -479,15 +480,26 @@ def validate_version(value):
     return True, None
 
 
+class _IncrementStatus(enum.Enum):
+    OK = "ok"
+    UNAPPROVED = "unapproved"
+    LIMIT_REACHED = "limit_reached"
+
+
+class _SetStatus(enum.Enum):
+    OK = "ok"
+    UNAPPROVED = "unapproved"
+
+
 @dataclass
 class _IncrementResult:
-    status: str  # 'ok' | 'unapproved' | 'limit_reached'
+    status: _IncrementStatus
     build_number: Optional[int] = None
 
 
 @dataclass
 class _SetResult:
-    status: str  # 'ok' | 'unapproved'
+    status: _SetStatus
     build_number: Optional[int] = None
 
 
@@ -508,10 +520,10 @@ def increment_build_number(project_key, local_version=None):
         is_new = project_key not in build_numbers
 
         if is_new and not accept_unknown:
-            return _IncrementResult(status='unapproved')
+            return _IncrementResult(status=_IncrementStatus.UNAPPROVED)
 
         if is_new and max_projects > 0 and len(build_numbers) >= max_projects:
-            return _IncrementResult(status='limit_reached')
+            return _IncrementResult(status=_IncrementStatus.LIMIT_REACHED)
 
         current = build_numbers.get(project_key, 0)
         if local_version is not None and local_version > current:
@@ -523,7 +535,7 @@ def increment_build_number(project_key, local_version=None):
         save_json_file(BUILD_NUMBERS_FILE, build_numbers)
 
         print(f"Incremented {project_key}: {current} -> {new_number}")
-        return _IncrementResult(status='ok', build_number=new_number)
+        return _IncrementResult(status=_IncrementStatus.OK, build_number=new_number)
 
 
 def set_build_number(project_key, version, force_unapproved=False):
@@ -553,12 +565,12 @@ def set_build_number(project_key, version, force_unapproved=False):
         is_new = project_key not in build_numbers
 
         if is_new and not accept_unknown and not force_unapproved:
-            return _SetResult(status='unapproved')
+            return _SetResult(status=_SetStatus.UNAPPROVED)
 
         build_numbers[project_key] = version
         save_json_file(BUILD_NUMBERS_FILE, build_numbers)
         print(f"Set {project_key} to {version}")
-        return _SetResult(status='ok', build_number=version)
+        return _SetResult(status=_SetStatus.OK, build_number=version)
 
 
 class BuildNumberHandler(BaseHTTPRequestHandler):
@@ -705,12 +717,12 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
 
                 result = increment_build_number(project_key, local_version)
 
-                if result.status == 'unapproved':
+                if result.status is _IncrementStatus.UNAPPROVED:
                     self.send_json_response(403, {
                         'error': f'Project key "{project_key}" is not approved. Add it to build_numbers.json or restart server with --accept-unknown',
                         'project_key': project_key
                     })
-                elif result.status == 'limit_reached':
+                elif result.status is _IncrementStatus.LIMIT_REACHED:
                     self.send_json_response(507, {
                         'error': 'Maximum project limit reached',
                         'detail': f'Server is configured to allow at most {max_projects} projects. '
@@ -719,14 +731,15 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
                         'max_projects': max_projects,
                         'project_key': project_key,
                     })
-                elif result.status == 'ok':
+                elif result.status is _IncrementStatus.OK:
                     self.send_json_response(200, {
                         'build_number': result.build_number,
                         'project_key': project_key
                     })
                 else:
+                    # Defensive: enum exhaustiveness — should never reach here.
                     self.send_json_response(500, {
-                        'error': f'Unexpected increment status: {result.status}'
+                        'error': f'Unexpected increment status: {result.status!r}'
                     })
 
             except json.JSONDecodeError:
@@ -773,19 +786,20 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
 
                 result = set_build_number(project_key, version)
 
-                if result.status == 'unapproved':
+                if result.status is _SetStatus.UNAPPROVED:
                     self.send_json_response(403, {
                         'error': f'Project key "{project_key}" is not approved',
                         'project_key': project_key
                     })
-                elif result.status == 'ok':
+                elif result.status is _SetStatus.OK:
                     self.send_json_response(200, {
                         'build_number': result.build_number,
                         'project_key': project_key
                     })
                 else:
+                    # Defensive: enum exhaustiveness — should never reach here.
                     self.send_json_response(500, {
-                        'error': f'Unexpected set status: {result.status}'
+                        'error': f'Unexpected set status: {result.status!r}'
                     })
 
             except json.JSONDecodeError:

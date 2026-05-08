@@ -1932,12 +1932,12 @@ class TestTOCTOUAndDiscriminatedResults:
             old_accept = server_module.accept_unknown
             server_module.accept_unknown = False
             result = server_module.set_build_number("brand-new", 42)
-            assert result.status == 'unapproved'
+            assert result.status is server_module._SetStatus.UNAPPROVED
 
             # With force_unapproved=True, the CLI must succeed regardless.
             result = server_module.set_build_number("brand-new", 42,
                                                     force_unapproved=True)
-            assert result.status == 'ok'
+            assert result.status is server_module._SetStatus.OK
             assert result.build_number == 42
         finally:
             server_module.accept_unknown = old_accept
