@@ -54,11 +54,8 @@ class PooledHTTPServer(HTTPServer):
         self._work_queue = queue.Queue(maxsize=self._max_workers)
         self._shutdown_event = threading.Event()
         self._workers = []
-        # Update process-wide start time so /healthz reports uptime
-        # relative to the most recent server instance (in tests there
-        # may be many sequential instances on different ports).
-        global _server_start_time
-        _server_start_time = time.monotonic()
+        # Per-instance uptime origin. /healthz reads it via self.server.
+        self._start_time = time.monotonic()
         for i in range(self._max_workers):
             t = threading.Thread(
                 target=self._worker_loop,
@@ -169,10 +166,6 @@ _bans_file_lock = threading.Lock()
 _tokens_cache = {}
 _tokens_cache_mtime = -1.0
 _tokens_cache_lock = threading.Lock()
-
-# Server lifecycle: monotonic timestamp when serve_forever() started.
-# Read by GET /healthz to report uptime.
-_server_start_time = 0.0
 
 
 class _BodyTooLarge(Exception):
@@ -827,7 +820,7 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
             try:
                 payload = {
                     'status': 'ok',
-                    'uptime_seconds': int(time.monotonic() - _server_start_time),
+                    'uptime_seconds': int(time.monotonic() - self.server._start_time),
                 }
                 if is_loopback:
                     payload['workers'] = self.server._max_workers
