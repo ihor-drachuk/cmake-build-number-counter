@@ -136,6 +136,12 @@ cmake --build build       # increments again
 ./build/simple_example    # or .\build\Debug\simple_example.exe on Windows
 ```
 
+## Staging Server
+
+A staging instance tracking the `dev` branch is available at `https://stage.cbnc-server.net` for testing server-side changes before they land in `main`. Use it to verify deploys, smoke-test new endpoints, or reproduce server bugs against unreleased code.
+
+Do **not** point real projects at it — counters and tokens may be wiped on any redeploy, and the version is whatever is currently on `dev`. For production use, point at `https://cbnc-server.net` or [self-host](SERVER.md#self-hosting).
+
 ## Key Design Decisions
 
 - **Two modes, same behavior.** BUILD mode uses `add_custom_target(... ALL)`, CONFIGURE mode uses `execute_process()` + auto-reconfigure via a stamp file (created at configure, deleted by custom target at build time, triggering reconfigure on next build). Both increment on every `cmake --build`.
