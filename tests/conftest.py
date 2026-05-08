@@ -33,6 +33,9 @@ def _start_server(tmp_path, monkeypatch, *, initial_data=None, accept=True, max_
 
     monkeypatch.setattr(server_module, 'accept_unknown', accept)
     monkeypatch.setattr(server_module, 'rate_limit', 0)  # disable rate limiting in tests
+    # Disable socket timeout in tests — slow CI / debugger pauses must not
+    # cause spurious 408s. Slowloris-specific tests opt back in explicitly.
+    monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', None)
 
     httpd = server_module.PooledHTTPServer(
         ('127.0.0.1', 0),

@@ -535,6 +535,12 @@ def set_build_number(project_key, version, force_unapproved=False):
 class BuildNumberHandler(BaseHTTPRequestHandler):
     """HTTP request handler for build number operations."""
 
+    # StreamRequestHandler.setup() applies this to self.connection:
+    # self.rfile.read() and self.wfile.write() will raise socket.timeout
+    # after this many seconds of socket inactivity. Defends against
+    # Slowloris-style clients that send headers and then stall on body.
+    timeout = 3
+
     def log_message(self, format, *args):
         """Override to customize logging."""
         sys.stdout.write(f"[{self.log_date_time_string()}] {format % args}\n")
@@ -586,6 +592,14 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
                 'max_bytes': max_body_size,
                 'received_bytes': e.size,
             })
+            return
+        except (socket.timeout, TimeoutError):
+            try:
+                self.send_json_response(408, {
+                    'error': 'Request timeout while reading body'
+                })
+            except (OSError, socket.timeout, TimeoutError, BrokenPipeError):
+                pass  # socket already gone — abort silently
             return
 
         parsed_path = urlparse(self.path)

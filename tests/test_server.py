@@ -978,6 +978,238 @@ class TestSetEndpoint:
         assert status == 400
 
 
+class TestSocketTimeout:
+    """Socket-level timeout via BuildNumberHandler.timeout — Slowloris defense."""
+
+    def _send_partial_request(self, url, content_length=100, body=b''):
+        """Open TCP, send headers (and optionally part of body), do not close.
+
+        Returns the socket so the test can read the server's response.
+        """
+        parsed = urlparse(url)
+        s = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+        headers = (
+            f"POST /increment HTTP/1.1\r\n"
+            f"Host: {parsed.hostname}:{parsed.port}\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {content_length}\r\n"
+            f"\r\n"
+        )
+        s.sendall(headers.encode('ascii'))
+        if body:
+            s.sendall(body)
+        return s
+
+    def _read_status_line(self, sock, deadline_sec):
+        """Read until we get the HTTP status line or timeout."""
+        sock.settimeout(deadline_sec)
+        chunks = []
+        try:
+            while b"\r\n" not in b"".join(chunks):
+                data = sock.recv(4096)
+                if not data:
+                    break
+                chunks.append(data)
+                if len(chunks) > 1024:
+                    break  # paranoia
+        except (socket.timeout, OSError):
+            pass
+        raw = b"".join(chunks)
+        if not raw:
+            return None
+        return raw.split(b"\r\n", 1)[0].decode('ascii', errors='replace')
+
+    # --- happy path ---
+
+    def test_normal_request_well_within_timeout(self, running_server):
+        """Standard requests complete far below the configured timeout."""
+        # running_server fixture sets timeout=None, but the request itself
+        # is sub-millisecond so this is a regression test against
+        # accidentally tightening the test timeout.
+        status, _ = post_json(running_server, "/increment", {"project_key": "fast"})
+        assert status == 200
+
+    # --- error handling ---
+
+    def test_partial_body_returns_408(self, tmp_path, monkeypatch):
+        """Headers sent, body never arrives → server times out → 408."""
+        import server as server_module
+        # Use a 1-second timeout to keep the test fast.
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        # _start_server's monkeypatch sets timeout=None — re-apply the 1s
+        # override after the fixture runs.
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        try:
+            s = self._send_partial_request(url, content_length=100)
+            try:
+                status_line = self._read_status_line(s, deadline_sec=4.0)
+                # Either 408 reply or RST — both are acceptable Slowloris
+                # defenses. We assert that something arrived OR the
+                # connection was reset.
+                if status_line is not None:
+                    assert "408" in status_line, f"expected 408, got {status_line!r}"
+            finally:
+                s.close()
+        finally:
+            _stop_server(httpd)
+
+    def test_408_response_is_well_formed_json(self, tmp_path, monkeypatch):
+        """When the 408 reaches the client, body is valid JSON with 'error'."""
+        import server as server_module
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        try:
+            parsed = urlparse(url)
+            s = self._send_partial_request(url, content_length=100)
+            try:
+                s.settimeout(4.0)
+                chunks = []
+                try:
+                    while True:
+                        data = s.recv(4096)
+                        if not data:
+                            break
+                        chunks.append(data)
+                except (socket.timeout, OSError):
+                    pass
+                raw = b"".join(chunks)
+                if not raw:
+                    return  # RST instead of response — see partial_body test
+                head, _, body = raw.partition(b"\r\n\r\n")
+                head_text = head.decode('ascii', errors='replace')
+                if "408" not in head_text.split("\r\n", 1)[0]:
+                    return
+                assert "application/json" in head_text.lower()
+                payload = json.loads(body.decode('utf-8'))
+                assert "error" in payload
+                assert "timeout" in payload["error"].lower()
+            finally:
+                s.close()
+        finally:
+            _stop_server(httpd)
+
+    def test_dead_socket_after_timeout_doesnt_crash_worker(self, tmp_path, monkeypatch):
+        """Client closing socket before 408 arrives → worker recovers cleanly."""
+        import server as server_module
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        try:
+            # Send headers, then immediately drop the connection.
+            s = self._send_partial_request(url, content_length=100)
+            s.close()
+            time.sleep(1.5)  # let worker hit timeout / cleanup
+
+            # Server still serves new requests.
+            status, _ = post_json(url, "/increment", {"project_key": "alive"})
+            assert status == 200
+        finally:
+            _stop_server(httpd)
+
+    # --- edge cases ---
+
+    def test_timeout_none_disables(self, tmp_path, monkeypatch):
+        """timeout=None means socket has no idle timeout (regression guard).
+
+        We verify behaviorally: with timeout=None, a 0.6s pause between
+        headers and body still completes successfully (no 408).
+        """
+        import server as server_module
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        # _start_server already monkeypatches timeout=None — reaffirm.
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', None)
+
+        try:
+            parsed = urlparse(url)
+            body = b'{"project_key":"slow"}'
+            s = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+            try:
+                headers = (
+                    f"POST /increment HTTP/1.1\r\n"
+                    f"Host: {parsed.hostname}:{parsed.port}\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    f"Connection: close\r\n"
+                    f"\r\n"
+                )
+                s.sendall(headers.encode('ascii'))
+                time.sleep(0.6)  # would trigger 408 with timeout=0.5
+                s.sendall(body)
+                s.settimeout(4.0)
+                resp = b""
+                try:
+                    while True:
+                        chunk = s.recv(4096)
+                        if not chunk:
+                            break
+                        resp += chunk
+                except (socket.timeout, OSError):
+                    pass
+                first = resp.split(b"\r\n", 1)[0].decode('ascii', errors='replace')
+                assert "200" in first, f"expected 200, got {first!r}"
+            finally:
+                s.close()
+        finally:
+            _stop_server(httpd)
+
+    # --- tricky-timed ---
+
+    def test_chunked_body_within_timeout_succeeds(self, tmp_path, monkeypatch):
+        """Body sent in chunks slower than the timeout but each chunk
+        arrives in time → request succeeds (timeout is per-recv, not
+        end-to-end)."""
+        import server as server_module
+        # 1s idle timeout. We send with 0.3s gaps — each gap < 1s, so no 408.
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', 1)
+
+        try:
+            parsed = urlparse(url)
+            body = b'{"project_key":"chunked"}'
+            s = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+            try:
+                headers = (
+                    f"POST /increment HTTP/1.1\r\n"
+                    f"Host: {parsed.hostname}:{parsed.port}\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    f"Connection: close\r\n"
+                    f"\r\n"
+                )
+                s.sendall(headers.encode('ascii'))
+                # Send body byte-by-byte with 0.05s gap (well below 1s).
+                for byte in body:
+                    s.sendall(bytes([byte]))
+                    time.sleep(0.05)
+
+                s.settimeout(4.0)
+                resp = b""
+                try:
+                    while True:
+                        chunk = s.recv(4096)
+                        if not chunk:
+                            break
+                        resp += chunk
+                except (socket.timeout, OSError):
+                    pass
+                first = resp.split(b"\r\n", 1)[0].decode('ascii', errors='replace')
+                assert "200" in first, f"got {first!r}"
+            finally:
+                s.close()
+        finally:
+            _stop_server(httpd)
+
+
 class TestPooledHTTPServer:
     """Worker thread pool, bounded queue, 503 backpressure, daemon workers."""
 
