@@ -801,13 +801,33 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
 
 
 def init_data_dir(data_dir: str) -> None:
-    """Initialize data directory, file paths, and reset module caches."""
+    """Initialize data directory, file paths, and reset module caches.
+
+    Raises OSError/PermissionError if the directory cannot be created or
+    is not writable — callers should catch and log these before exiting.
+    """
     global DATA_DIR, BUILD_NUMBERS_FILE, TOKENS_FILE
     global _tokens_cache, _tokens_cache_mtime
     DATA_DIR = data_dir
     BUILD_NUMBERS_FILE = os.path.join(DATA_DIR, "build_numbers.json")
     TOKENS_FILE = os.path.join(DATA_DIR, "tokens.json")
-    os.makedirs(DATA_DIR, exist_ok=True)
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except OSError as e:
+        raise OSError(
+            f"Cannot create data directory '{DATA_DIR}': {e}"
+        ) from e
+    # Verify the directory is actually writable before the server starts.
+    # A freshly mounted volume may exist but be owned by root with mode
+    # 0o755, making it unwritable by the server process. Catching this
+    # here produces a clear error message instead of a silent crash later
+    # when save_json_file() tries to open a .tmp file for writing.
+    if not os.access(DATA_DIR, os.W_OK):
+        raise PermissionError(
+            f"Data directory '{DATA_DIR}' exists but is not writable by "
+            f"the current process (uid={os.getuid()}). "
+            "Check directory ownership and permissions."
+        )
     # Caches are file-path-bound; reset whenever paths change (e.g. test
     # fixtures that share the module across multiple tmp_path dirs).
     with _tokens_cache_lock:
@@ -1097,7 +1117,12 @@ def main():
         project_root = os.path.dirname(script_dir)
         data_dir = os.path.join(project_root, "server-data")
 
-    init_data_dir(data_dir)
+    try:
+        init_data_dir(data_dir)
+    except (OSError, PermissionError) as e:
+        print(f"FATAL: Failed to initialize data directory: {e}", file=sys.stderr)
+        sys.stderr.flush()
+        sys.exit(1)
 
     # Handle token management commands (exit without starting server)
     if args.add_token:
@@ -1130,18 +1155,40 @@ def main():
         print(f"Set {args.project_key} = {args.set_version}")
         return
 
-    # Initialize build numbers file if it doesn't exist
+    # Initialize build numbers file if it doesn't exist.
+    # Wrap in try/except so a permission or I/O error on a freshly
+    # mounted volume produces a clear log message instead of a silent
+    # crash (the process would otherwise die with an unhandled exception
+    # that never reaches the deploy log).
     if not os.path.exists(BUILD_NUMBERS_FILE):
-        save_json_file(BUILD_NUMBERS_FILE, {})
-        print(f"Created {BUILD_NUMBERS_FILE}")
-        print("Add project keys to this file to approve them, or use --accept-unknown flag")
+        try:
+            save_json_file(BUILD_NUMBERS_FILE, {})
+            print(f"Created {BUILD_NUMBERS_FILE}")
+            print("Add project keys to this file to approve them, or use --accept-unknown flag")
+        except (OSError, PermissionError) as e:
+            print(
+                f"FATAL: Cannot create {BUILD_NUMBERS_FILE}: {e}\n"
+                f"Ensure the data directory '{DATA_DIR}' is writable by the server process.",
+                file=sys.stderr,
+            )
+            sys.stderr.flush()
+            sys.exit(1)
 
     # Start server
-    server = PooledHTTPServer(
-        (args.host, args.port),
-        BuildNumberHandler,
-        max_workers=args.max_threads,
-    )
+    try:
+        server = PooledHTTPServer(
+            (args.host, args.port),
+            BuildNumberHandler,
+            max_workers=args.max_threads,
+        )
+    except OSError as e:
+        print(f"FATAL: Cannot bind server to {args.host}:{args.port}: {e}", file=sys.stderr)
+        sys.stderr.flush()
+        sys.exit(1)
+    except Exception as e:
+        print(f"FATAL: Server initialization failed: {e}", file=sys.stderr)
+        sys.stderr.flush()
+        sys.exit(1)
 
     print(f"Build Number Counter Server starting...")
     print(f"Listening on {args.host}:{args.port}")
@@ -1210,6 +1257,10 @@ def main():
         print("\nShutting down server...")
         server.shutdown()
         print("Server stopped.")
+    except Exception as e:
+        print(f"FATAL: Unexpected server error: {e}", file=sys.stderr)
+        sys.stderr.flush()
+        sys.exit(1)
 
 
 if __name__ == '__main__':
