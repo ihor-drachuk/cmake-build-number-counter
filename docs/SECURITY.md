@@ -60,6 +60,8 @@ python src/server.py --rate-limit 0
 - Temporary bans expire automatically, or restart the server
 - Permanent bans: edit `server-data/banned_ips.json` and remove the IP entry (picked up on next request)
 
+**Behind a reverse proxy**, all clients share the proxy's rate-limit bucket. `--trusted-proxy` gives each client its own. See [Behind a Reverse Proxy](SERVER.md#behind-a-reverse-proxy).
+
 **Note:** The client automatically falls back to local counter when rate-limited (429), so builds are not blocked.
 
 ## Built-in Protections

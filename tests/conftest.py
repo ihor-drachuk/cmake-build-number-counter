@@ -39,6 +39,8 @@ def _start_server(tmp_path, monkeypatch, *, initial_data=None, accept=True,
 
     monkeypatch.setattr(server_module, 'accept_unknown', accept)
     monkeypatch.setattr(server_module, 'rate_limit', 0)  # disable rate limiting in tests
+    monkeypatch.setattr(server_module, 'trusted_proxies', [])
+    monkeypatch.setattr(server_module, 'real_ip_header', 'X-Real-IP')
     monkeypatch.setattr(server_module.BuildNumberHandler, 'timeout', handler_timeout)
     if max_request_seconds is None:
         # Disable wall-clock deadline by setting an effectively-infinite value.

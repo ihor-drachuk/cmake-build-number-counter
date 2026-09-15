@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -48,21 +49,23 @@ def wait_for_server(url, timeout=5):
     raise RuntimeError(f"Server at {url} did not start within {timeout}s")
 
 
-def start_server(port, data_dir, tokens=None, rate_limit=None, ban_duration=None):
+def start_server(port, data_dir, tokens=None, rate_limit=None, ban_duration=None, extra_args=()):
     """Start server subprocess with --data-dir pointing to temp directory.
 
     Args:
         tokens: Optional dict to write as tokens.json before starting.
         rate_limit: Optional int for --rate-limit flag.
         ban_duration: Optional int for --ban-duration flag.
+        extra_args: Further server CLI arguments.
     """
     if tokens is not None:
         os.makedirs(data_dir, exist_ok=True)
         with open(os.path.join(data_dir, "tokens.json"), 'w') as f:
             json.dump(tokens, f)
 
+    # -u: terminate() kills the server before it flushes a buffered stdout.
     cmd = [
-        sys.executable, SERVER_PY,
+        sys.executable, '-u', SERVER_PY,
         '--port', str(port),
         '--host', '127.0.0.1',
         '--data-dir', data_dir,
@@ -72,6 +75,7 @@ def start_server(port, data_dir, tokens=None, rate_limit=None, ban_duration=None
         cmd += ['--rate-limit', str(rate_limit)]
     if ban_duration is not None:
         cmd += ['--ban-duration', str(ban_duration)]
+    cmd += list(extra_args)
 
     return subprocess.Popen(
         cmd,
@@ -336,6 +340,90 @@ class TestRateLimitIntegration:
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+
+def _get_status(url, headers):
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode())
+
+
+class TestTrustedProxyIntegration:
+    def test_rate_limit_per_forwarded_client(self, tmp_path):
+        data_dir = str(tmp_path / "server-data")
+        port = pick_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+
+        proc = start_server(port, data_dir, rate_limit=2, extra_args=['--trusted-proxy', '127.0.0.1/32'])
+        try:
+            wait_for_server(server_url)
+            client_a = {'X-Real-IP': '198.51.100.1'}
+            client_b = {'X-Real-IP': '198.51.100.2'}
+
+            assert _get_status(f"{server_url}/", client_a)[0] == 200
+            assert _get_status(f"{server_url}/", client_a)[0] == 200
+            status, data = _get_status(f"{server_url}/", client_a)
+            assert status == 429
+            assert data["ip"] == '198.51.100.1'
+            assert _get_status(f"{server_url}/", client_b)[0] == 200
+        finally:
+            proc.terminate()
+            stdout, _ = proc.communicate(timeout=5)
+
+        output = stdout.decode()
+        assert "Trusted proxies: 127.0.0.1/32 (client IP from X-Real-IP)" in output
+        assert "Temporarily banned IP: 198.51.100.1 for" in output
+        assert "198.51.100.2 via 127.0.0.1 - [" in output
+
+    def test_ipv6_and_ipv4_trusted_proxies_are_accepted(self, tmp_path):
+        data_dir = str(tmp_path / "server-data")
+        port = pick_free_port()
+        extra_args = ['--trusted-proxy', 'fd00::/8', '--trusted-proxy', '100.64.0.0/10']
+        proc = start_server(port, data_dir, extra_args=extra_args)
+        try:
+            wait_for_server(f"http://127.0.0.1:{port}")
+        finally:
+            proc.terminate()
+            stdout, _ = proc.communicate(timeout=5)
+        assert "Trusted proxies: fd00::/8, 100.64.0.0/10 (client IP from X-Real-IP)" in stdout.decode()
+
+    def test_custom_real_ip_header(self, tmp_path):
+        data_dir = str(tmp_path / "server-data")
+        port = pick_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+        extra_args = ['--trusted-proxy', '127.0.0.1/32', '--real-ip-header', 'X-Forwarded-For']
+
+        proc = start_server(port, data_dir, rate_limit=1, extra_args=extra_args)
+        try:
+            wait_for_server(server_url)
+            client = {'X-Forwarded-For': '203.0.113.5, 198.51.100.7', 'X-Real-IP': '198.51.100.99'}
+            assert _get_status(f"{server_url}/", client)[0] == 200
+            status, data = _get_status(f"{server_url}/", client)
+            assert status == 429
+            assert data["ip"] == '198.51.100.7'
+        finally:
+            proc.terminate()
+            stdout, _ = proc.communicate(timeout=5)
+        assert "Trusted proxies: 127.0.0.1/32 (client IP from X-Forwarded-For)" in stdout.decode()
+
+    @pytest.mark.parametrize('args, error', [
+        (['--trusted-proxy', '100.64.0.0/33'], 'error: --trusted-proxy:'),
+        (['--trusted-proxy', '::ffff:100.64.0.0/106'], 'error: --trusted-proxy:'),
+        (['--trusted-proxy', '::ffff:0:0/95'], 'error: --trusted-proxy:'),
+        (['--trusted-proxy', '::/0'], 'error: --trusted-proxy:'),
+        (['--trusted-proxy', '100.64.0.0/10', '--real-ip-header', ''], 'error: --real-ip-header:'),
+        (['--trusted-proxy', '100.64.0.0/10', '--real-ip-header', ' '], 'error: --real-ip-header:'),
+        (['--trusted-proxy', '100.64.0.0/10', '--real-ip-header', ' X-Real-IP'], 'error: --real-ip-header:'),
+        (['--trusted-proxy', '100.64.0.0/10', '--real-ip-header', 'X-Real-IP:'], 'error: --real-ip-header:'),
+    ])
+    def test_invalid_proxy_options_are_rejected(self, tmp_path, args, error):
+        cmd = [sys.executable, SERVER_PY, '--data-dir', str(tmp_path / "server-data")] + args
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 2
+        assert error in result.stderr
 
 
 class TestClientForceVersion:

@@ -6,13 +6,16 @@ A simple HTTP server that manages build numbers for multiple projects.
 Provides atomic increment operations with persistent storage.
 """
 
+import email.message
 import enum
 import fnmatch
 import http.client
+import ipaddress
 import json
 import argparse
 import os
 import queue
+import re
 import secrets
 import socket
 import sys
@@ -21,7 +24,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import urlparse
 from validation import validate_project_key
 
@@ -143,6 +146,14 @@ temp_bans = {}                # {ip: monotonic_expiry}
 permanent_bans = set()        # in-memory cache of banned_ips.json
 permanent_bans_mtime = 0.0    # last known mtime of banned_ips.json
 rate_lock = threading.Lock()  # protects in-memory rate state only
+
+# Reverse proxies whose client-IP header is trusted. Empty = the TCP peer is always the client.
+trusted_proxies = []          # [ipaddress.IPv4Network | IPv6Network]
+real_ip_header = 'X-Real-IP'
+
+_HTTP_TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")  # RFC 9110 field-name (token)
+# Peers in this range are matched as IPv4, so an IPv6 network covering it never matches them.
+_IPV4_MAPPED_NETWORK = ipaddress.ip_network('::ffff:0:0/96')
 
 # Opportunistic global sweep: every Nth allowed request triggers a full
 # cleanup of stale rate_tracker entries and expired temp_bans. Avoids
@@ -300,6 +311,41 @@ def _persist_permanent_ban(ip: str) -> None:
             pass
 
 
+def _parse_ip(value: str) -> Optional[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]]:
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    # A dual-stack socket reports IPv4 peers as ::ffff:a.b.c.d, which must match IPv4 networks.
+    if address.version == 6 and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
+@dataclass(frozen=True)
+class _RequestOrigin:
+    peer_ip: str
+    client_ip: str   # the forwarded client IP, or peer_ip when there is no usable one
+    forwarded: bool  # a trusted proxy sent the client-IP header, whatever its value
+
+
+def resolve_origin(peer_ip: str, headers) -> _RequestOrigin:
+    direct = _RequestOrigin(peer_ip=peer_ip, client_ip=peer_ip, forwarded=False)
+    if headers is None:
+        return direct
+    peer = _parse_ip(peer_ip)
+    if peer is None or not any(peer in net for net in trusted_proxies):
+        return direct
+    lines = headers.get_all(real_ip_header)
+    if lines is None:
+        return direct
+    # Repeated header lines form one list. The trusted proxy writes the rightmost entry.
+    # Entries to its left are untrusted.
+    client = _parse_ip(','.join(lines).split(',')[-1])
+    client_ip = peer_ip if client is None else str(client)
+    return _RequestOrigin(peer_ip=peer_ip, client_ip=client_ip, forwarded=True)
+
+
 def check_rate_limit(handler: BaseHTTPRequestHandler) -> bool:
     # Returns True if request is allowed, False if rejected (429 sent).
     # Disk I/O for banned_ips.json never happens under rate_lock: a fresh
@@ -308,7 +354,7 @@ def check_rate_limit(handler: BaseHTTPRequestHandler) -> bool:
     if rate_limit <= 0:
         return True
 
-    ip = handler.client_address[0]
+    ip = handler.origin().client_ip
     now = time.monotonic()
 
     # If permanent bans are in use, refresh the cache OUTSIDE rate_lock.
@@ -552,9 +598,17 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
             timer.cancel()
         super().finish()
 
+    def origin(self) -> _RequestOrigin:
+        # Errors raised before header parsing leave no headers attribute.
+        # Python 3.13+ gives an HTTP/0.9 request a plain dict.
+        headers = getattr(self, 'headers', None)
+        return resolve_origin(self.client_address[0], headers if isinstance(headers, email.message.Message) else None)
+
     def log_message(self, format, *args):
         """Override to customize logging."""
-        sys.stdout.write(f"[{self.log_date_time_string()}] {format % args}\n")
+        origin = self.origin()
+        source = f"{origin.client_ip} via {origin.peer_ip}" if origin.forwarded else origin.peer_ip
+        sys.stdout.write(f"{source} - [{self.log_date_time_string()}] {format % args}\n")
 
     def send_json_response(self, status_code, data):
         """Send JSON response."""
@@ -760,21 +814,20 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
         parsed_path = urlparse(self.path)
 
         if parsed_path.path == '/healthz':
-            # Loopback callers (in-process watchdog, Docker HEALTHCHECK in
-            # bridge mode) bypass rate-limit AND see the full payload
-            # including queue_depth. External callers go through normal
-            # rate-limit and see a minimal payload — queue_depth is a
-            # real-time DoS oracle, do not expose it publicly.
-            client_ip = self.client_address[0]
-            is_loopback = client_ip in ('127.0.0.1', '::1', '::ffff:127.0.0.1')
-            if not is_loopback and not check_rate_limit(self):
+            # Local callers are the in-process watchdog and Docker HEALTHCHECK in bridge mode.
+            # queue_depth is a real-time DoS oracle, so public callers never see it.
+            # A local caller is a loopback TCP peer whose request no trusted proxy forwarded.
+            # A client-supplied header can only remove local status, never grant it.
+            origin = self.origin()
+            is_local = origin.peer_ip in ('127.0.0.1', '::1', '::ffff:127.0.0.1') and not origin.forwarded
+            if not is_local and not check_rate_limit(self):
                 return
             try:
                 payload = {
                     'status': 'ok',
                     'uptime_seconds': int(time.monotonic() - self.server._start_time),
                 }
-                if is_loopback:
+                if is_local:
                     payload['workers'] = self.server._max_workers
                     payload['queue_depth'] = self.server._work_queue.qsize()
                 self.send_json_response(200, payload)
@@ -791,7 +844,7 @@ class BuildNumberHandler(BaseHTTPRequestHandler):
                 'endpoints': {
                     '/increment': 'POST with JSON body: {"project_key": "key", "local_version": N (optional)}',
                     '/set': 'POST with JSON body: {"project_key": "key", "version": N}',
-                    '/healthz': 'GET — liveness probe (no auth, no rate limit)'
+                    '/healthz': 'GET — liveness probe (no auth; rate-limited unless local)'
                 }
             })
         else:
@@ -1010,6 +1063,21 @@ def main():
         action='store_true',
         help='Use permanent bans (persisted to banned_ips.json) instead of temporary.'
     )
+    parser.add_argument(
+        '--trusted-proxy',
+        action='append',
+        default=[],
+        metavar='CIDR',
+        help='Reverse proxy network whose --real-ip-header is trusted as the client IP '
+             '(repeatable, e.g. 100.64.0.0/10 on Railway). Default: none, the TCP peer is the client.'
+    )
+    parser.add_argument(
+        '--real-ip-header',
+        default='X-Real-IP',
+        metavar='NAME',
+        help='Header carrying the client IP from a trusted proxy (default: X-Real-IP). '
+             'For a comma-separated list, the rightmost entry is used, so only the last proxy hop is trusted.'
+    )
 
     parser.add_argument(
         '--watchdog',
@@ -1079,15 +1147,27 @@ def main():
         parser.error("--watchdog-failures must be >= 1")
     if args.watchdog_timeout < 1:
         parser.error("--watchdog-timeout must be >= 1")
+    if not _HTTP_TOKEN.fullmatch(args.real_ip_header):
+        parser.error(f"--real-ip-header: {args.real_ip_header!r} is not a valid HTTP header name")
+    try:
+        proxy_networks = [ipaddress.ip_network(cidr, strict=False) for cidr in args.trusted_proxy]
+    except ValueError as e:
+        parser.error(f"--trusted-proxy: {e}")
+    for net in proxy_networks:
+        if net.version == 6 and net.overlaps(_IPV4_MAPPED_NETWORK):
+            parser.error(f"--trusted-proxy: {net} covers IPv4-mapped addresses. Pass IPv4 networks separately.")
 
     global accept_unknown, max_body_size, max_projects
     global rate_limit, ban_duration, ban_permanent
+    global trusted_proxies, real_ip_header
     accept_unknown = args.accept_unknown
     max_body_size = args.max_body_size
     max_projects = args.max_projects
     rate_limit = args.rate_limit
     ban_duration = args.ban_duration
     ban_permanent = args.ban_permanent
+    trusted_proxies = proxy_networks
+    real_ip_header = args.real_ip_header
 
     # Initialize data directory
     if args.data_dir:
@@ -1161,6 +1241,11 @@ def main():
         print(f"Rate limit: {rate_limit} req/min per IP, ban: {ban_info}")
     else:
         print("Rate limit: disabled")
+    if trusted_proxies:
+        networks = ", ".join(str(net) for net in trusted_proxies)
+        print(f"Trusted proxies: {networks} (client IP from {real_ip_header})")
+    else:
+        print("Trusted proxies: none")
     tokens = load_tokens()
     if tokens:
         print(f"Authentication: enabled ({len(tokens)} token(s))")

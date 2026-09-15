@@ -98,6 +98,19 @@ Checklist of features and their test status. Update when adding new features or 
 | Rate limiting | YES | test_server | `TestRateLimiting` |
 | Temporary bans | YES | test_server | `TestRateLimiting` |
 | Permanent bans | YES | test_server | `TestRateLimiting` |
+| Client IP from trusted proxy header | YES | test_server | `TestResolveOrigin` |
+| Per-client rate limit behind trusted proxy | YES | test_server, test_integration | `TestTrustedProxyServer`, `TestTrustedProxyIntegration` |
+| Untrusted peer cannot spoof client IP | YES | test_server | `TestTrustedProxyServer.test_untrusted_peer_cannot_spoof_header` |
+| Unusable header from trusted proxy falls back to peer | YES | test_server | `TestTrustedProxyServer.test_trusted_proxy_without_usable_header_limits_by_peer` |
+| Repeated client-IP header lines | YES | test_server | `TestResolveOrigin.test_repeated_header_lines_use_last_entry` |
+| /healthz forwarded by loopback proxy is public | YES | test_server | `TestTrustedProxyServer.test_healthz_forwarded_by_loopback_proxy_is_public` |
+| /healthz from loopback without forwarding stays local | YES | test_server | `TestTrustedProxyServer.test_healthz_from_loopback_proxy_without_header_is_local`, `TestTrustedProxyServer.test_healthz_header_from_untrusted_loopback_peer_is_ignored` |
+| HTTP/0.9 request from trusted proxy | YES | test_server | `TestTrustedProxyServer.test_origin_without_message_headers_is_direct`, `TestTrustedProxyServer.test_http09_request_from_trusted_proxy_is_served` (Python 3.13+) |
+| /healthz local for IPv6 loopback peers | YES | test_server | `TestTrustedProxyServer.test_healthz_from_ipv6_loopback_peer_is_local`, `TestTrustedProxyServer.test_healthz_from_public_or_forwarded_ipv6_peer_is_public` |
+| Permanent ban behind trusted proxy records client IP | YES | test_server | `TestTrustedProxyServer.test_permanent_ban_records_forwarded_client` |
+| Custom --real-ip-header | YES | test_integration | `TestTrustedProxyIntegration.test_custom_real_ip_header` |
+| IPv6 and IPv4 --trusted-proxy accepted | YES | test_integration | `TestTrustedProxyIntegration.test_ipv6_and_ipv4_trusted_proxies_are_accepted` |
+| Invalid --trusted-proxy / --real-ip-header rejected | YES | test_integration | `TestTrustedProxyIntegration.test_invalid_proxy_options_are_rejected` |
 | --set-counter CLI | YES | test_integration | `TestServerSetCounter` |
 | Corrupted build_numbers.json | NO | — | |
 | Corrupted banned_ips.json | NO | — | |
@@ -113,7 +126,7 @@ Checklist of features and their test status. Update when adding new features or 
 | Tokens cache with mtime invalidation | YES | test_server | `TestTokensCache` |
 | Tokens cache concurrent reads | YES | test_server | `TestTokensCache.test_concurrent_cache_reads_no_corruption` |
 | GET /healthz endpoint | YES | test_server | `TestHealthz` |
-| /healthz bypasses rate limit | YES | test_server | `TestHealthz.test_healthz_bypasses_rate_limit` |
+| /healthz bypasses rate limit for local callers | YES | test_server | `TestHealthz.test_healthz_bypasses_rate_limit` |
 | Watchdog os._exit on failures | YES | test_server | `TestWatchdog` |
 | Watchdog recovers from intermittent failures | YES | test_server | `TestWatchdog.test_recovers_after_intermittent_failure` |
 

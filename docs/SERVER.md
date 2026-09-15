@@ -62,6 +62,8 @@ set BUILD_SERVER_URL=http://your-server:8080      # Windows
 | `--rate-limit` | `10` | Max requests per minute per IP (`0` = off) |
 | `--ban-duration` | `600` | Temp ban duration in seconds |
 | `--ban-permanent` | off | Use persistent bans instead of temporary |
+| `--trusted-proxy` | none | Reverse proxy CIDR whose client-IP header is trusted (repeatable) |
+| `--real-ip-header` | `X-Real-IP` | Header with the client IP; for a list, the rightmost entry |
 | `--watchdog` | off | In-process liveness probe; `os._exit(1)` on failure |
 | `--watchdog-interval` | `10` | Seconds between watchdog probes |
 | `--watchdog-failures` | `3` | Consecutive failures before exit |
@@ -73,6 +75,30 @@ set BUILD_SERVER_URL=http://your-server:8080      # Windows
 > to `0.0.0.0` (the default), `::`, or include loopback in your bind
 > setup — or leave `--watchdog` off. The server prints a warning at
 > startup if it detects this combination.
+
+### Behind a Reverse Proxy
+
+Behind a proxy, every connection comes from the proxy's IP. Without `--trusted-proxy`, all clients share one rate-limit bucket, and one noisy client bans everyone.
+
+`--trusted-proxy` names the proxy's network. For connections from that network, the server takes the client IP from `--real-ip-header`. It uses that IP for rate limiting, bans, the `429` body and the access log. If the header is missing or invalid, or the connection comes from elsewhere, the connection IP is used.
+
+The server reads the rightmost entry of the header, so it trusts only the last proxy hop. With chained proxies, that last hop must set the header to the real client IP.
+
+A request that a trusted loopback proxy forwards with the header is not local. `/healthz` rate-limits it and hides `workers` and `queue_depth`.
+
+```bash
+# Railway, inside the container: the edge connects from 100.64.0.0/10 and sets X-Real-IP
+python server.py --data-dir /data --trusted-proxy 100.64.0.0/10
+
+# nginx on the same host: proxy_set_header X-Real-IP $remote_addr;
+python src/server.py --host 127.0.0.1 --trusted-proxy 127.0.0.1/32
+```
+
+Each access log line starts with the client IP. When a trusted proxy sent the header, the line shows both addresses: `198.51.100.2 via 100.64.0.23 - [...]`. If that header is not a valid IP, both addresses are the proxy's.
+
+> **Warning:** Trust only the proxy's own network. A client connecting from a trusted network can send any client IP in the header. The proxy must set or append that header, never pass the client's value through unchanged.
+
+> **Railway:** its docs do not publish the edge's source range. `100.64.0.0/10` is the observed range. Railway may change it. If log lines stop showing `via`, check the peer addresses. Never attach a Railway TCP Proxy to the HTTP port. TCP Proxy traffic keeps the client's headers. Clients could then spoof `X-Real-IP`.
 
 ### Concurrency Model
 
@@ -93,7 +119,7 @@ clients receive `408 Request Timeout`.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | Service info |
-| `GET` | `/healthz` | Liveness probe (no auth, no rate limit) |
+| `GET` | `/healthz` | Liveness probe (no auth; rate-limited unless local) |
 | `POST` | `/increment` | Increment and return build number |
 | `POST` | `/set` | Force-set build number to exact value |
 
@@ -228,8 +254,9 @@ docker run --rm -v ./data:/data USERNAME/cbnc-server:prod \
 
 2. In service settings, set **Custom Start Command** to override the default CMD:
    ```
-   python server.py --data-dir /data --accept-unknown
+   python server.py --data-dir /data --accept-unknown --trusted-proxy 100.64.0.0/10
    ```
+   `--trusted-proxy` gives each client its own rate limit. See [Behind a Reverse Proxy](#behind-a-reverse-proxy).
 
 3. Under **Networking**, set the public port to `8080` (the server's default). Alternatively, add `--port <N>` to the start command to match whatever port Railway expects.
 

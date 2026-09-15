@@ -1,4 +1,5 @@
 import http.client
+import ipaddress
 import json
 import os
 import socket
@@ -52,11 +53,11 @@ def _expect_rejection(func, *args, **kwargs):
         return _SERVER_REJECTED
 
 
-def get_json(base_url, path):
+def get_json(base_url, path, headers=None):
     """Helper: GET from server, return (status_code, response_dict)."""
-    url = f"{base_url}{path}"
+    req = urllib.request.Request(f"{base_url}{path}", headers=headers or {})
     try:
-        with urllib.request.urlopen(url, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read().decode())
@@ -895,6 +896,247 @@ class TestRateLimiting:
         assert '127.0.0.1' not in server_module.rate_tracker
 
 
+def _headers(**values):
+    message = http.client.HTTPMessage()
+    for name, value in values.items():
+        message[name.replace('_', '-')] = value
+    return message
+
+
+class TestResolveOrigin:
+    @pytest.fixture(autouse=True)
+    def server(self, monkeypatch):
+        import server as server_module
+        monkeypatch.setattr(server_module, 'trusted_proxies', [ipaddress.ip_network('100.64.0.0/10')])
+        monkeypatch.setattr(server_module, 'real_ip_header', 'X-Real-IP')
+        return server_module
+
+    @staticmethod
+    def _resolve(server, peer_ip, headers):
+        origin = server.resolve_origin(peer_ip, headers)
+        assert origin.peer_ip == peer_ip
+        return origin.client_ip, origin.forwarded
+
+    def test_no_trusted_proxies_ignores_header(self, monkeypatch, server):
+        monkeypatch.setattr(server, 'trusted_proxies', [])
+        assert self._resolve(server, '100.64.0.23', _headers(X_Real_IP='198.51.100.1')) == ('100.64.0.23', False)
+
+    def test_untrusted_peer_ignores_header(self, server):
+        assert self._resolve(server, '203.0.113.7', _headers(X_Real_IP='198.51.100.1')) == ('203.0.113.7', False)
+
+    def test_trusted_peer_uses_header(self, server):
+        assert self._resolve(server, '100.64.0.23', _headers(X_Real_IP='198.51.100.1')) == ('198.51.100.1', True)
+
+    def test_header_name_is_case_insensitive(self, server):
+        assert self._resolve(server, '100.64.0.23', _headers(x_real_ip='198.51.100.1')) == ('198.51.100.1', True)
+
+    @pytest.mark.parametrize('value', ['', '   ', 'unknown', '198.51.100.1:443', '999.1.1.1', '198.51.100.1,'])
+    def test_trusted_peer_with_invalid_header_is_forwarded_with_peer_ip(self, server, value):
+        assert self._resolve(server, '100.64.0.23', _headers(X_Real_IP=value)) == ('100.64.0.23', True)
+
+    def test_trusted_peer_without_header_is_direct(self, server):
+        assert self._resolve(server, '100.64.0.23', _headers()) == ('100.64.0.23', False)
+        assert self._resolve(server, '100.64.0.23', None) == ('100.64.0.23', False)
+
+    def test_forwarded_list_uses_rightmost_entry(self, monkeypatch, server):
+        monkeypatch.setattr(server, 'real_ip_header', 'X-Forwarded-For')
+        headers = _headers(X_Forwarded_For='1.1.1.1, 198.51.100.2')
+        assert self._resolve(server, '100.64.0.23', headers) == ('198.51.100.2', True)
+
+    def test_configured_header_replaces_default(self, monkeypatch, server):
+        monkeypatch.setattr(server, 'real_ip_header', 'X-Forwarded-For')
+        assert self._resolve(server, '100.64.0.23', _headers(X_Real_IP='198.51.100.1')) == ('100.64.0.23', False)
+
+    def test_repeated_header_lines_use_last_entry(self, server):
+        headers = http.client.HTTPMessage()
+        headers['X-Real-IP'] = '6.6.6.6'
+        headers['X-Real-IP'] = '198.51.100.1'
+        assert self._resolve(server, '100.64.0.23', headers) == ('198.51.100.1', True)
+
+    def test_ipv4_mapped_peer_matches_ipv4_network(self, server):
+        headers = _headers(X_Real_IP='198.51.100.1')
+        assert self._resolve(server, '::ffff:100.64.0.23', headers) == ('198.51.100.1', True)
+
+    def test_ipv6_network_and_client(self, monkeypatch, server):
+        monkeypatch.setattr(server, 'trusted_proxies', [ipaddress.ip_network('fd00::/8')])
+        assert self._resolve(server, 'fd12::1', _headers(X_Real_IP='2001:DB8::5')) == ('2001:db8::5', True)
+        assert self._resolve(server, '100.64.0.23', _headers(X_Real_IP='198.51.100.1')) == ('100.64.0.23', False)
+
+
+class TestTrustedProxyServer:
+    def _start(self, tmp_path, monkeypatch, peer_ip, rate_limit=2):
+        import server as server_module
+        if peer_ip is not None:
+            original_setup = server_module.BuildNumberHandler.setup
+            def fake_setup(self):
+                original_setup(self)
+                self.client_address = (peer_ip, 12345)
+            monkeypatch.setattr(server_module.BuildNumberHandler, 'setup', fake_setup)
+        url, httpd = _start_server(tmp_path, monkeypatch, accept=True)
+        monkeypatch.setattr(server_module, 'trusted_proxies', [ipaddress.ip_network('100.64.0.0/10')])
+        monkeypatch.setattr(server_module, 'rate_limit', rate_limit)
+        monkeypatch.setattr(server_module, 'ban_permanent', False)
+        monkeypatch.setattr(server_module, 'rate_tracker', {})
+        monkeypatch.setattr(server_module, 'temp_bans', {})
+        monkeypatch.setattr(server_module, 'permanent_bans', set())
+        return server_module, url, httpd
+
+    def test_clients_behind_trusted_proxy_have_separate_buckets(self, tmp_path, monkeypatch, capsys):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, '100.64.0.23')
+        client_a = {'X-Real-IP': '198.51.100.1'}
+        client_b = {'X-Real-IP': '198.51.100.2'}
+        try:
+            for _ in range(2):
+                assert get_json(url, "/", client_a)[0] == 200
+            status, data = get_json(url, "/", client_a)
+            assert status == 429
+            assert data["ip"] == '198.51.100.1'
+
+            assert get_json(url, "/", client_b)[0] == 200
+            assert set(server_module.temp_bans) == {'198.51.100.1'}
+            assert set(server_module.rate_tracker) == {'198.51.100.2'}
+        finally:
+            _stop_server(httpd)
+        output = capsys.readouterr().out
+        assert "Temporarily banned IP: 198.51.100.1 for" in output
+        assert '198.51.100.2 via 100.64.0.23 - [' in output
+
+    def test_trusted_proxy_without_usable_header_limits_by_peer(self, tmp_path, monkeypatch, capsys):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, '100.64.0.23')
+        try:
+            for _ in range(2):
+                assert get_json(url, "/")[0] == 200
+            status, data = get_json(url, "/", {'X-Real-IP': 'garbage'})
+            assert status == 429
+            assert data["ip"] == '100.64.0.23'
+            assert set(server_module.temp_bans) == {'100.64.0.23'}
+        finally:
+            _stop_server(httpd)
+        log_lines = [line for line in capsys.readouterr().out.splitlines() if '"GET / ' in line]
+        expected_sources = ['100.64.0.23', '100.64.0.23', '100.64.0.23 via 100.64.0.23']
+        assert [line.split(' - [')[0] for line in log_lines] == expected_sources
+
+    def test_untrusted_peer_cannot_spoof_header(self, tmp_path, monkeypatch, capsys):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, '203.0.113.7')
+        try:
+            assert get_json(url, "/", {'X-Real-IP': '198.51.100.1'})[0] == 200
+            assert get_json(url, "/", {'X-Real-IP': '198.51.100.2'})[0] == 200
+            status, data = get_json(url, "/", {'X-Real-IP': '198.51.100.3'})
+            assert status == 429
+            assert data["ip"] == '203.0.113.7'
+            assert set(server_module.temp_bans) == {'203.0.113.7'}
+        finally:
+            _stop_server(httpd)
+        output = capsys.readouterr().out
+        assert '203.0.113.7 - [' in output
+        assert 'via' not in output
+
+    @pytest.mark.parametrize('forwarded_ip', ['203.0.113.9', '127.0.0.1', 'garbage', ''])
+    def test_healthz_forwarded_by_loopback_proxy_is_public(self, tmp_path, monkeypatch, forwarded_ip):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, None, rate_limit=1)
+        monkeypatch.setattr(server_module, 'trusted_proxies', [ipaddress.ip_network('127.0.0.0/8')])
+        try:
+            status, data = get_json(url, "/healthz", {'X-Real-IP': forwarded_ip})
+            assert status == 200
+            assert "queue_depth" not in data
+            assert get_json(url, "/healthz", {'X-Real-IP': forwarded_ip})[0] == 429
+        finally:
+            _stop_server(httpd)
+
+    def test_healthz_from_loopback_proxy_without_header_is_local(self, tmp_path, monkeypatch):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, None, rate_limit=1)
+        monkeypatch.setattr(server_module, 'trusted_proxies', [ipaddress.ip_network('127.0.0.0/8')])
+        try:
+            for _ in range(3):
+                status, data = get_json(url, "/healthz")
+                assert status == 200
+                assert "queue_depth" in data
+            assert server_module.rate_tracker == {}
+        finally:
+            _stop_server(httpd)
+
+    @pytest.mark.parametrize('headers', [{}, None])
+    def test_origin_without_message_headers_is_direct(self, monkeypatch, headers):
+        import server as server_module
+        monkeypatch.setattr(server_module, 'trusted_proxies', [ipaddress.ip_network('127.0.0.0/8')])
+        handler = server_module.BuildNumberHandler.__new__(server_module.BuildNumberHandler)
+        handler.client_address = ('127.0.0.1', 12345)
+        if headers is not None:
+            handler.headers = headers
+        assert handler.origin() == server_module._RequestOrigin('127.0.0.1', '127.0.0.1', False)
+
+    @pytest.mark.parametrize('peer_ip', ['::1', '::ffff:127.0.0.1'])
+    def test_healthz_from_ipv6_loopback_peer_is_local(self, tmp_path, monkeypatch, peer_ip):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, peer_ip, rate_limit=1)
+        try:
+            for _ in range(2):
+                status, data = get_json(url, "/healthz")
+                assert status == 200
+                assert "queue_depth" in data
+        finally:
+            _stop_server(httpd)
+
+    @pytest.mark.parametrize('peer_ip, trusted, headers', [
+        ('2001:db8::1', '100.64.0.0/10', {}),
+        ('::ffff:203.0.113.7', '100.64.0.0/10', {}),
+        ('::1', '::1/128', {'X-Real-IP': '203.0.113.9'}),
+    ])
+    def test_healthz_from_public_or_forwarded_ipv6_peer_is_public(self, tmp_path, monkeypatch,
+                                                                  peer_ip, trusted, headers):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, peer_ip, rate_limit=1)
+        monkeypatch.setattr(server_module, 'trusted_proxies', [ipaddress.ip_network(trusted)])
+        try:
+            status, data = get_json(url, "/healthz", headers)
+            assert status == 200
+            assert "queue_depth" not in data
+            assert get_json(url, "/healthz", headers)[0] == 429
+        finally:
+            _stop_server(httpd)
+
+    def test_permanent_ban_records_forwarded_client(self, tmp_path, monkeypatch):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, '100.64.0.23', rate_limit=1)
+        monkeypatch.setattr(server_module, 'ban_permanent', True)
+        monkeypatch.setattr(server_module, 'permanent_bans_mtime', 0.0)
+        try:
+            assert get_json(url, "/", {'X-Real-IP': '198.51.100.1'})[0] == 200
+            status, data = get_json(url, "/", {'X-Real-IP': '198.51.100.1'})
+            assert status == 429
+            assert data["ban_type"] == "permanent"
+            assert get_json(url, "/", {'X-Real-IP': '198.51.100.2'})[0] == 200
+        finally:
+            _stop_server(httpd)
+        with open(os.path.join(server_module.DATA_DIR, "banned_ips.json")) as f:
+            assert set(json.load(f)["banned"]) == {'198.51.100.1'}
+
+    @pytest.mark.skipif(sys.version_info < (3, 13), reason="older http.server waits for HTTP/0.9 headers")
+    @pytest.mark.parametrize('path, body_marker', [('/', b'Build Number Counter Server'), ('/healthz', b'queue_depth')])
+    def test_http09_request_from_trusted_proxy_is_served(self, tmp_path, monkeypatch, capsys, path, body_marker):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, None, rate_limit=10)
+        monkeypatch.setattr(server_module, 'trusted_proxies', [ipaddress.ip_network('127.0.0.0/8')])
+        port = urlparse(url).port
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=5) as sock:
+                sock.sendall(f"GET {path}\r\n".encode())
+                response = b''
+                while chunk := sock.recv(4096):
+                    response += chunk
+        finally:
+            _stop_server(httpd)
+        assert body_marker in response
+        assert 'Traceback' not in capsys.readouterr().err
+
+    def test_healthz_header_from_untrusted_loopback_peer_is_ignored(self, tmp_path, monkeypatch):
+        server_module, url, httpd = self._start(tmp_path, monkeypatch, None, rate_limit=1)
+        try:
+            for _ in range(3):
+                status, data = get_json(url, "/healthz", {'X-Real-IP': '203.0.113.9'})
+                assert status == 200
+                assert "queue_depth" in data
+            assert server_module.rate_tracker == {}
+        finally:
+            _stop_server(httpd)
+
+
 class TestLocalVersionValidation:
     """Tests for local_version input validation on /increment."""
 
@@ -1234,7 +1476,7 @@ class TestWatchdog:
 
 
 class TestHealthz:
-    """GET /healthz — liveness probe, no auth, no rate limit."""
+    """GET /healthz — liveness probe, no auth, rate-limited unless local."""
 
     # --- happy path ---
 

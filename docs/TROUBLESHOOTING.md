@@ -34,6 +34,7 @@ Server rejections (HTTP 401, 403, 429) cause the build to fail immediately inste
 - Your IP has been rate-limited or banned
 - Temporary ban: wait for expiry (default 10 min) or restart the server
 - Permanent ban: remove your IP from `server-data/banned_ips.json`
+- Server behind a reverse proxy: one noisy client bans everyone, because all requests share the proxy's IP. Start the server with `--trusted-proxy`. See [Behind a Reverse Proxy](SERVER.md#behind-a-reverse-proxy).
 
 > **Note:** If the 429 response cannot be delivered due to a TCP reset (see `docs/adr/001-tcp-rst-on-early-http-error-response.md`), the client treats it as a transient network error and falls back to local. This is an edge case, not the normal path.
 
@@ -59,7 +60,7 @@ Server rejections (HTTP 401, 403, 429) cause the build to fail immediately inste
 - All worker threads (`--max-threads`) plus their queue are busy
 - Healthy steady-state operation should never see this; sustained 503
   means either traffic exceeds capacity or workers are stuck
-- Check `GET /healthz` — `queue_depth` shows the backlog
+- Check `GET /healthz` from inside the container, or on the server host without Docker — `queue_depth` shows the backlog
 - Increase `--max-threads` if the load is real, otherwise investigate
   why workers are not draining (filesystem stalls, downstream calls)
 
