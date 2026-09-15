@@ -62,7 +62,7 @@ python src/server.py --rate-limit 0
 
 **Behind a reverse proxy**, all clients share the proxy's rate-limit bucket. `--trusted-proxy` gives each client its own. See [Behind a Reverse Proxy](SERVER.md#behind-a-reverse-proxy).
 
-**Note:** The client automatically falls back to local counter when rate-limited (429), so builds are not blocked.
+**Note:** A rate-limited client (429) does not fall back to the local counter. It exits with an error and the build fails.
 
 ## Built-in Protections
 
