@@ -32,7 +32,7 @@ jobs:
           - os: ubuntu-latest
             generator: "Ninja"
           - os: windows-latest
-            generator: "Visual Studio 17 2022"
+            generator: "Visual Studio (default)"
           - os: windows-latest
             generator: "Ninja"
 
@@ -63,9 +63,10 @@ jobs:
         run: pip install pytest
 
       - name: Run CMake tests
-        env:
-          CMAKE_GENERATOR: ${{ matrix.generator }}
-        run: python -m pytest tests/ -v -m cmake --tb=short
+        shell: pwsh
+        run: |
+          if ('${{ matrix.generator }}' -ne 'Visual Studio (default)') { $env:CMAKE_GENERATOR = '${{ matrix.generator }}' }
+          python -m pytest tests/ -v -m cmake --tb=short
 
   docker-test:
     needs: python-tests

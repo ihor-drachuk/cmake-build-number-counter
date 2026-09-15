@@ -26,7 +26,7 @@ Every `cmake --build` increments the counter and generates a C++ version header 
 |-----------|-----------|
 | Unix Makefiles | Linux, macOS |
 | Ninja | Linux, macOS, Windows |
-| Visual Studio 17 (2022) | Windows |
+| Visual Studio 2022 and newer | Windows |
 
 ## Quick Start
 
